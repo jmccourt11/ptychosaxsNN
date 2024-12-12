@@ -1,13 +1,13 @@
+#%%
 import torch
 import torch.nn as nn
 import sys
 import os
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../'))) 
 from utils.ptychosaxsNN_utils import *
 from models.UNet import recon_model
-
-#testing
 
 class ptychosaxsNN:
     def __init__(self):
@@ -55,18 +55,23 @@ class ptychosaxsNN:
         param_size /= (1024 ** 2)  # Convert bytes to megabytes
         print(f"Model size: {param_size:.2f} MB") 
                 
-
+#%%
 if __name__ == "__main__":
     x=ptychosaxsNN()
-    path='/net/micdata/data2/12IDC/ptychosaxs/'
-    #path='/mnt/micdata2/12IDC/ptychosaxs/'
-    x.load_model(state_dict_pth=path+'models/best_model_Unet_cindy.pth')
+    #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
+    local=True
+    if local:
+        path = Path("Y:/ptychosaxs")
+    else:
+        path = Path('/net/micdata/data2/12IDC/ptychosaxs/')
+    x.load_model(state_dict_pth=path / 'models/best_model_Unet_cindy.pth')   
     x.set_device()
     x.model.to(x.device)
     x.model.eval()
+    #%%
     # Load data
     scan=1125 #1115,1083,1098
-    filename=path+f'/data/cindy_scan{scan}_diffraction_patterns.npy'
+    filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
     full_dps_orig=np.load(filename)
     full_dps=full_dps_orig.copy()
     for dp_pp in full_dps:
@@ -96,3 +101,5 @@ if __name__ == "__main__":
     plt.colorbar(im2)
     plt.colorbar(im3)
     plt.show()
+
+# %%
