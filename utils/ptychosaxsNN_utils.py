@@ -11,6 +11,9 @@ from scipy.ndimage import maximum_filter, label, find_objects
 import scipy.fft as spf
 import scipy.io as sio
 from typing import List, Tuple
+import pyFAI
+from pathlib import Path
+import re
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -32,7 +35,10 @@ def log10_custom(arr):
     result[~positive_mask] = min_log10_value
     
     return result
-    
+
+def set_path(path):
+    return Path(path)
+   
 def create_circular_mask(image, center_x=0,center_y=0,radius=48):
     """
     Creates a circular mask at the center of the image.
@@ -73,7 +79,6 @@ def replace_2d_array_values_by_row_indices(array, start, end):
     array[start:end+1, :] = np.min(array)
     return array
 
-
 def replace_2d_array_values_by_column_indices(array, start, end):
     """
     Replaces values in a 2D numpy array with 0 if their row indices fall within the specified range.
@@ -91,8 +96,6 @@ def replace_2d_array_values_by_column_indices(array, start, end):
 
     array[:,start:end+1] = np.min(array)
     return array
-    
-    
     
 def preprocess_cindy(dp):#,probe):
     size=256
@@ -132,8 +135,7 @@ def invert_preprocess_cindy(dp,sf,bkg):
     dp_rec=dp*sf + bkg
     dp_rec=10**(dp_rec)
     return dp_rec
-    
-    
+        
 def plot_and_save_scan(dps,ptycho_scan,scanx=20,scany=15):
     
     fig, axs = plt.subplots(scany,scanx, sharex=True,sharey=True,figsize=(scanx,scany))
@@ -168,15 +170,12 @@ def plot_and_save_scan(dps,ptycho_scan,scanx=20,scany=15):
     fig.colorbar(im, cax=cbar_ax)
     plt.show()
     return inputs,outputs,sfs,bkgs
-    
         
 def resize_dp(dp):
     return resize(dp,(256,256),preserve_range=True,anti_aliasing=True)
 
-
 def norm_0to1(image):
     return np.asarray((image-np.min(image))/(np.max(image)-np.min(image)))
-
     
 def find_peaks2d(dp, center_cut=100, n=25, threshold=0.3, plot=True):
     peaks = []
@@ -209,7 +208,6 @@ def find_peaks2d(dp, center_cut=100, n=25, threshold=0.3, plot=True):
         plt.show()
 
     return peaks
-
 
 def find_peaks_2d_filter(diffraction_pattern, center_cut=25,n=25, threshold=0.1,plot=True):
     """
@@ -249,8 +247,6 @@ def find_peaks_2d_filter(diffraction_pattern, center_cut=25,n=25, threshold=0.1,
 
     return filtered_peaks
 
-
-# Function to calculate neighborhood integrated intensity
 def neighborhood_intensity(image, x, y, radius=5):
     """
     Calculate the sum of pixel intensities in a square neighborhood around (x, y).
@@ -271,7 +267,6 @@ def neighborhood_intensity(image, x, y, radius=5):
     # Extract the neighborhood and calculate the sum of intensities
     neighborhood = image[x_min:x_max, y_min:y_max]
     return np.sum(neighborhood)
-
 
 def circular_neighborhood_intensity(image, x, y, radius=5,plot=True):
     x_min = max(0, x - radius)
@@ -309,7 +304,6 @@ def circular_neighborhood_intensity(image, x, y, radius=5,plot=True):
     
     return np.sum(neighborhood[mask])
     
-    
 def read_hdf5_file(file_path):
     """
     Reads an HDF5 file and returns its contents.
@@ -333,16 +327,47 @@ def read_hdf5_file(file_path):
         print(f"An error occurred: {e}")
 
     return data_dict
-    
-    
 
-def load_hdf5_scan_to_npy(file_path,scan,plot=True):
+def find_directories_with_number(base_path, number):
+    """
+    Finds immediate subdirectories containing a specific number in their name,
+    allowing for flexible number formatting.
+
+    Args:
+    - base_path (str): The path to the directory to search.
+    - number (int): The number to search for in subdirectory names.
+
+    Returns:
+    - list: A list of matching directory paths.
+    """
+    matching_dirs = []
+    # Create a regex pattern to match the number with optional leading zeros anywhere in the name
+    #number_pattern = rf"0*{number}\b"
+    number_pattern = rf"(^|[^0-9])0*{number}([^0-9]|$)"
+
+    try:
+        # List only directories in the base path
+        for entry in os.listdir(base_path):
+            full_path = os.path.join(base_path, entry)
+            # Check if the entry is a directory and matches the pattern
+            if os.path.isdir(full_path) and re.search(number_pattern, entry):
+                matching_dirs.append(full_path)
+    except FileNotFoundError:
+        print(f"The path '{base_path}' does not exist.")
+    except PermissionError:
+        print(f"Permission denied to access '{base_path}'.")
+
+    return [Path(m) for m in matching_dirs]
+    
+def load_h5_scan_to_npy(file_path,scan,plot=True):
     # For loading cindy ptycho scan data
     # file_path = '/net/micdata/data2/12IDC/2021_Nov/ptycho/'
     # scan = 1125 (e.g.)
     dps=[]
-    for filename in os.listdir(file_path+f'scan{scan}')[:-1]:
-        data = read_hdf5_file(file_path+f'scan{scan}/'+filename)['entry/data/data']
+    file_path_new=find_directories_with_number(file_path,scan)[0]
+    for filename in os.listdir(file_path_new)[:-1]:
+        filename = file_path_new / filename
+        data = read_hdf5_file(filename)['entry/data/data']
         print(filename)
         for j in range(0,len(data)):
             dps.append(data[j])
@@ -352,8 +377,28 @@ def load_hdf5_scan_to_npy(file_path,scan,plot=True):
                 plt.show()
     dps=np.asarray(dps)
     return dps
-    
-       
+
+def load_hdf5_scan_to_npy(file_path,scan,plot=True):
+    # For loading cindy ptycho scan data
+    # file_path = '/net/micdata/data2/12IDC/2021_Nov/results/ML_recon/'
+    # scan = 1125 (e.g.)
+    dps=[]
+    file_path_new=find_directories_with_number(file_path,scan)[0]
+    for filename in os.listdir(file_path_new)[:-1]:
+        filename = file_path_new / filename
+        read_hdf5_file(file_path_new / filename).keys()
+        if 'dp' not in read_hdf5_file(file_path_new / filename).keys(): #skip parameter file
+            continue
+        else:
+            data = read_hdf5_file(file_path_new / filename)['dp']
+            for j in range(0,len(data)):
+                dps.append(data[j])
+                if plot:
+                    plt.figure()
+                    plt.imshow(data[j],norm=colors.LogNorm())
+                    plt.show()
+    dps=np.asarray(dps)
+    return dps
     
 def create_annular_mask(shape, peak_x,peak_y, r_outer):
     """Create an annular mask between r_inner and r_outer centered at 'center'."""
@@ -362,8 +407,6 @@ def create_annular_mask(shape, peak_x,peak_y, r_outer):
     mask = (dist_from_center <= r_outer)
     return mask
     
-    
-
 def ensure_inverse_peaks(peaks: List[Tuple[int, int]], tolerance: int = 4) -> List[Tuple[int, int]]:
     """
     Ensures that each peak in the list has an inverse peak, within a given tolerance.

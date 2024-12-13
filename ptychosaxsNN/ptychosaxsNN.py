@@ -15,6 +15,8 @@ class ptychosaxsNN:
         self.nconv=64
         self.probe=None
         self.device=None
+        self.full_data=None
+        self.sum_data=None
         
     def __repr__(self):
         return f'ptychosaxsNN (model: {self.model!r}, probe: {self.probe!r}, device: {self.device!r})'
@@ -53,7 +55,18 @@ class ptychosaxsNN:
         for param in x.model.parameters():
             param_size += param.numel() * param.element_size()  # numel() gives number of elements, element_size() gives size in bytes
         param_size /= (1024 ** 2)  # Convert bytes to megabytes
-        print(f"Model size: {param_size:.2f} MB") 
+        print(f"Model size: {param_size:.2f} MB")
+        
+    def load_h5_ptycho_data(self,exp_dir,scan):
+        file_path=f'/net/micdata/data2/12IDC/{exp_dir}/ptycho/'
+        res=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+        self.full_data=res
+        self.sum_data=np.sum(res,axis=0)
+
+    def load_hdf5_ptycho_results(self,exp_dir,sample_name,scan):
+        file_path=f'/net/micdata/data2/12IDC/{exp_dir}/results/{sample_name}/fly{scan}/'
+        self.data=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+        
                 
 #%%
 if __name__ == "__main__":
@@ -82,7 +95,7 @@ if __name__ == "__main__":
     
     # Summed scan 
     dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
-    
+#%%    
     # # Specific frame
     # index=230
     # dps_copy=full_dps[index,1:513,259:771]
