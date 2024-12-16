@@ -9,8 +9,8 @@ sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 from utils.ptychosaxsNN_utils import *
 from models.UNet import recon_model
 #sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../deconvolutionNN/'))) 
-import deconvolutionNN as dNN
-
+import deconvolutionNN
+#%%
 class ptychosaxsNN:
     def __init__(self):
         self.model=None
@@ -85,24 +85,40 @@ if __name__ == "__main__":
         path = Path("Y:/ptychosaxs")
     else:
         path = Path('/net/micdata/data2/12IDC/ptychosaxs/')
+        
     x.load_model(state_dict_pth=path / 'models/best_model_Unet_cindy.pth')   
     x.set_device()
     x.model.to(x.device)
     x.model.eval()
     #%%
-    # Load data
-    scan=1125 #1115,1083,1098
-    filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
-    full_dps_orig=np.load(filename)
-    full_dps=full_dps_orig.copy()
-    for dp_pp in full_dps:
-        dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
     
-    # Plot and return a full scan
-    # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
+
+
+    date_dir = '2024_Dec'
+    exp_dir='JM03_3D_'
+    scans=np.arange(706,720,1)
+
+    directory='results' #'test'
+    Ndp=512
+    filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+    data=read_hdf5_file(filepath)
+    dps_copy = np.sum(data['dp'],axis=0)
     
-    # Summed scan 
-    dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
+      
+    # # Load data
+    # scan=1125 #1115,1083,1098
+    # filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
+    # full_dps_orig=np.load(filename)
+    # full_dps=full_dps_orig.copy()
+    # for dp_pp in full_dps:
+    #     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
+    
+    # # Plot and return a full scan
+    # # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
+    
+    # # Summed scan 
+    # dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
+    
 #%%    
     # # Specific frame
     # index=230

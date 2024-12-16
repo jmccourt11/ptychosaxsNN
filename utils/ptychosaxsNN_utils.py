@@ -115,6 +115,24 @@ def preprocess_cindy(dp):#,probe):
     dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
     return dp_pp,sf,bkg
 
+def preprocesszhihua(dp):#,probe):
+    size=256
+    dp_pp=dp
+    #probe_sub=abs(spf.fftshift(spf.fft2(probe)))**2
+    #dp_pp=dp-probe_sub
+    dp_pp=np.asarray(replace_2d_array_values_by_column_indices(replace_2d_array_values_by_column_indices(replace_2d_array_values_by_row_indices(replace_2d_array_values_by_row_indices(dp_pp,0,16),495,511),0,16),495,511))
+    dp_pp=log10_custom(dp_pp)
+    #dp_pp[np.isnan(dp_pp)] = 0
+    #dp_pp[dp_pp <= 0] = np.min(dp_pp[dp_pp > 0])# small positive value
+    dp_pp=np.asarray(resize(dp_pp[:,:],(size,size),preserve_range=True,anti_aliasing=True))
+    #dp_pp=np.log10(dp_pp)
+
+    sf=np.max(dp_pp)-np.min(dp_pp)
+    bkg=np.min(dp_pp)
+    dp_pp=np.asarray((dp_pp-bkg)/(sf))
+    dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
+    return dp_pp,sf,bkg
+
 def preprocess_chansong(dp,probe):
     lbound,ubound=(23,38),(235,250)
     size=256
