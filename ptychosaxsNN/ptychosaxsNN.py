@@ -8,15 +8,19 @@ from pathlib import Path
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../'))) 
 from utils.ptychosaxsNN_utils import *
 from models.UNet import recon_model
+#sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../deconvolutionNN/'))) 
+import deconvolutionNN as dNN
 
 class ptychosaxsNN:
     def __init__(self):
         self.model=None
-        self.nconv=64
+        self.nconv=64 #same number for convolutions for all networks so far
         self.probe=None
         self.device=None
         self.full_data=None
         self.sum_data=None
+        self.ptycho_hdf5=None
+        self.scan=None
         
     def __repr__(self):
         return f'ptychosaxsNN (model: {self.model!r}, probe: {self.probe!r}, device: {self.device!r})'
@@ -57,15 +61,19 @@ class ptychosaxsNN:
         param_size /= (1024 ** 2)  # Convert bytes to megabytes
         print(f"Model size: {param_size:.2f} MB")
         
-    def load_h5_ptycho_data(self,exp_dir,scan):
-        file_path=f'/net/micdata/data2/12IDC/{exp_dir}/ptycho/'
-        res=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+    def load_h5(self,exp_dir,scan):
+        #e.g. 2024_Dec , 630
+        file_path=Path(f'/net/micdata/data2/12IDC/{exp_dir}/ptycho/')
+        res=load_h5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
         self.full_data=res
         self.sum_data=np.sum(res,axis=0)
+        self.scan=scan
 
-    def load_hdf5_ptycho_results(self,exp_dir,sample_name,scan):
-        file_path=f'/net/micdata/data2/12IDC/{exp_dir}/results/{sample_name}/fly{scan}/'
-        self.data=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+    def load_hdf5(self,exp_dir,sample_name,scan):
+        # e.g. 2024_Dec , JM02_3D_ , 630
+        file_path=Path(f'/net/micdata/data2/12IDC/{exp_dir}/results/{sample_name}/')
+        self.ptycho_hdf5=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+        self.scan=scan
         
                 
 #%%
