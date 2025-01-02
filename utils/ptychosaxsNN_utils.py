@@ -115,12 +115,12 @@ def preprocess_cindy(dp):#,probe):
     dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
     return dp_pp,sf,bkg
 
-def preprocesszhihua(dp):#,probe):
-    size=256
+def preprocess_zhihua(dp,mask):#,probe):
+    size=512
     dp_pp=dp
     #probe_sub=abs(spf.fftshift(spf.fft2(probe)))**2
     #dp_pp=dp-probe_sub
-    dp_pp=np.asarray(replace_2d_array_values_by_column_indices(replace_2d_array_values_by_column_indices(replace_2d_array_values_by_row_indices(replace_2d_array_values_by_row_indices(dp_pp,0,16),495,511),0,16),495,511))
+    dp_pp=np.asarray(dp*mask)
     dp_pp=log10_custom(dp_pp)
     #dp_pp[np.isnan(dp_pp)] = 0
     #dp_pp[dp_pp <= 0] = np.min(dp_pp[dp_pp > 0])# small positive value

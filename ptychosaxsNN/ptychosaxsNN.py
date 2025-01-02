@@ -7,9 +7,10 @@ from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../'))) 
 from utils.ptychosaxsNN_utils import *
-from models.UNet import recon_model
+#from models.UNet import recon_model
+from models.UNet512x512 import recon_model
 #sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../deconvolutionNN/'))) 
-import deconvolutionNN
+#import deconvolutionNN
 #%%
 class ptychosaxsNN:
     def __init__(self):
@@ -80,13 +81,13 @@ class ptychosaxsNN:
 if __name__ == "__main__":
     x=ptychosaxsNN()
     #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
-    local=True
+    local=False
     if local:
         path = Path("Y:/ptychosaxs")
     else:
         path = Path('/net/micdata/data2/12IDC/ptychosaxs/')
         
-    x.load_model(state_dict_pth=path / 'models/best_model_Unet_cindy.pth')   
+    x.load_model(state_dict_pth=path / 'trained_model/best_model.pth')   
     x.set_device()
     x.model.to(x.device)
     x.model.eval()
@@ -94,13 +95,19 @@ if __name__ == "__main__":
     
 
 
+#    date_dir = '2024_Dec'
+#    exp_dir='JM03_3D_'
+#    scans=np.arange(706,720,1)
+    
     date_dir = '2024_Dec'
-    exp_dir='JM03_3D_'
-    scans=np.arange(706,720,1)
+    exp_dir='RC_01_'
+    #scans=np.arange(706,315,1)
+    scans=[315]
 
     directory='results' #'test'
-    Ndp=512
-    filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+    Ndp=1408
+    #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+    filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
     data=read_hdf5_file(filepath)
     dps_copy = np.sum(data['dp'],axis=0)
     
@@ -125,15 +132,17 @@ if __name__ == "__main__":
     # dps_copy=full_dps[index,1:513,259:771]
     
     # Preprocess and run data through NN
-    resultT,sfT,bkgT=preprocess_cindy(dps_copy) # preprocess
+    mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
+    mask=np.ones(mask.shape)-mask
+    resultT,sfT,bkgT=preprocess_zhihua(dps_copy,mask) # preprocess
     resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
     final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
     
     # Plot
     fig,ax=plt.subplots(1,3)
-    im1=ax[0].imshow(dps_copy,norm=colors.LogNorm())
-    im2=ax[1].imshow(resultT[0][0])
-    im3=ax[2].imshow(final)
+    im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
+    im2=ax[1].imshow(resultT[0][0],cmap='jet')
+    im3=ax[2].imshow(final,cmap='jet')
     plt.colorbar(im1)
     plt.colorbar(im2)
     plt.colorbar(im3)
