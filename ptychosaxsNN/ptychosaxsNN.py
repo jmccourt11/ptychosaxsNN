@@ -4,9 +4,16 @@ import torch.nn as nn
 import sys
 import os
 from pathlib import Path
+import scipy.io as sio
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import colors
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../'))) 
-from utils.ptychosaxsNN_utils import *
+import importlib
+#from utils.ptychosaxsNN_utils import * # run into issues with reimporting
+import utils.ptychosaxsNN_utils as ptNN
+importlib.reload(ptNN)
 #from models.UNet import recon_model
 from models.UNet512x512 import recon_model
 #sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../deconvolutionNN/'))) 
@@ -65,7 +72,7 @@ class ptychosaxsNN:
     def load_h5(self,exp_dir,scan):
         #e.g. 2024_Dec , 630
         file_path=Path(f'/net/micdata/data2/12IDC/{exp_dir}/ptycho/')
-        res=load_h5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+        res=ptNN.load_h5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
         self.full_data=res
         self.sum_data=np.sum(res,axis=0)
         self.scan=scan
@@ -73,15 +80,14 @@ class ptychosaxsNN:
     def load_hdf5(self,exp_dir,sample_name,scan):
         # e.g. 2024_Dec , JM02_3D_ , 630
         file_path=Path(f'/net/micdata/data2/12IDC/{exp_dir}/results/{sample_name}/')
-        self.ptycho_hdf5=load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
+        self.ptycho_hdf5=ptNN.load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
         self.scan=scan
         
-                
-#%%
+#%%                
 if __name__ == "__main__":
     x=ptychosaxsNN()
     #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
-    local=False
+    local=True
     if local:
         path = Path("Y:/ptychosaxs")
     else:
@@ -91,10 +97,9 @@ if __name__ == "__main__":
     x.set_device()
     x.model.to(x.device)
     x.model.eval()
-    #%%
     
 
-
+    #%%
 #    date_dir = '2024_Dec'
 #    exp_dir='JM03_3D_'
 #    scans=np.arange(706,720,1)
@@ -104,48 +109,64 @@ if __name__ == "__main__":
     #scans=np.arange(706,315,1)
     scans=[315]
 
+
+    date_dir = '2024_Dec'
+    exp_dir='JM02_3D_'
+    scans=np.arange(445,635,1)
+    #scans=[450]
+    
     directory='results' #'test'
-    Ndp=1408
-    #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
-    filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
-    data=read_hdf5_file(filepath)
-    dps_copy = np.sum(data['dp'],axis=0)
-    
-      
-    # # Load data
-    # scan=1125 #1115,1083,1098
-    # filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
-    # full_dps_orig=np.load(filename)
-    # full_dps=full_dps_orig.copy()
-    # for dp_pp in full_dps:
-    #     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
-    
-    # # Plot and return a full scan
-    # # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
-    
-    # # Summed scan 
-    # dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
-    
-#%%    
-    # # Specific frame
-    # index=230
-    # dps_copy=full_dps[index,1:513,259:771]
-    
-    # Preprocess and run data through NN
-    mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
-    mask=np.ones(mask.shape)-mask
-    resultT,sfT,bkgT=preprocess_zhihua(dps_copy,mask) # preprocess
-    resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
-    final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
-    
-    # Plot
-    fig,ax=plt.subplots(1,3)
-    im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
-    im2=ax[1].imshow(resultT[0][0],cmap='jet')
-    im3=ax[2].imshow(final,cmap='jet')
-    plt.colorbar(im1)
-    plt.colorbar(im2)
-    plt.colorbar(im3)
-    plt.show()
+    #Ndp=1408
+    Ndp=512
+    for scan in scans:
+        #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+        filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scan:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+        #filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
+        data=ptNN.read_hdf5_file(filepath)
+        dps_copy = np.sum(data['dp'],axis=0)
+        
+        #dps_copy=np.load(Path("Y:/ptychosaxs/data/diff_sim/14/output_hanning_conv_00001.npz"))['convDP']
+        
+        
+        # # Load data
+        # scan=1125 #1115,1083,1098
+        # filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
+        # full_dps_orig=np.load(filename)
+        # full_dps=full_dps_orig.copy()
+        # for dp_pp in full_dps:
+        #     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
+        
+        # # Plot and return a full scan
+        # # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
+        
+        # # Summed scan 
+        # dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
+        
+        # # Specific frame
+        # index=230
+        # dps_copy=full_dps[index,1:513,259:771]
+
+        # Preprocess and run data through NN
+        #mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
+        #d=ptNN.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly446/data_roi0_Ndp512_dp.hdf5')
+        d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
+        mask = np.sum(d['dp'],axis=0)<=0
+        
+        #mask=np.load(Path("Y:/") / f'{date_dir}/mask1408.npy')
+        mask=np.ones(mask.shape)-mask
+
+        resultT,sfT,bkgT=ptNN.preprocess_zhihua2(dps_copy,mask) # preprocess
+        resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
+        final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
+        
+        # Plot
+        fig,ax=plt.subplots(1,3)
+        im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
+        im2=ax[1].imshow(resultT[0][0],cmap='jet')
+        im3=ax[2].imshow(final,cmap='jet')
+        plt.colorbar(im1)
+        plt.colorbar(im2)
+        plt.colorbar(im3)
+        plt.show()
 
 # %%
