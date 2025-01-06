@@ -115,14 +115,14 @@ def preprocess_cindy(dp):#,probe):
     dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
     return dp_pp,sf,bkg
 
-def preprocess_zhihua2(dp,mask):#,probe):
+def preprocess_zhihua2(dp,mask,center_decay=2):#,probe):
     size=512
     dp_pp=dp
     #probe_sub=abs(spf.fftshift(spf.fft2(probe)))**2
     #dp_pp=dp-probe_sub
-    mask=mask#+1e-9
+    #mask=mask#+1e-9
     dp_pp=np.asarray(dp_pp*mask)
-    #mask=resize(mask,(size,size),preserve_range=True,anti_aliasing=True)#+1e-3
+    #mask=resize(mask,(size,size),preserve_range=True,anti_aliasing=True)+1e-3
 
     #dp_pp[np.isnan(dp_pp)] = 0
     #dp_pp[dp_pp <= 0] = np.min(dp_pp[dp_pp > 0])# small positive value
@@ -136,7 +136,41 @@ def preprocess_zhihua2(dp,mask):#,probe):
     bkg=np.min(dp_pp)
     dp_pp=np.asarray((dp_pp-bkg)/(sf))
     dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
+    #print(dp_pp.shape)
+    #dp_pp=vignette_transform(dp_pp, center_decay=center_decay)
+    #print(dp_pp.shape)
     return dp_pp,sf,bkg
+
+
+def preprocess_zhihua(dp,mask,center_decay=2):#,probe):
+    size=512
+    dp_pp=dp
+    dp_pp=np.asarray(dp_pp*mask)
+
+    dp_pp=np.asarray(resize(dp_pp,(size,size),preserve_range=True,anti_aliasing=True))
+    dp_pp=log10_custom(dp_pp)
+
+    sf=np.max(dp_pp)-np.min(dp_pp)
+    bkg=np.min(dp_pp)
+    dp_pp=np.asarray((dp_pp-bkg)/(sf))
+    dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
+
+    return dp_pp,sf,bkg
+
+def generate_weight_mask(shape, center_decay):
+    h, w = shape
+    y, x = np.ogrid[:h, :w]
+    center_y, center_x = h // 2, w // 2
+    distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+    max_distance = np.sqrt(center_x**2 + center_y**2)
+    weight_mask = (distance / max_distance) ** center_decay
+    return weight_mask
+
+def vignette_transform(image, center_decay=2):
+    h, w = image.shape[-2:]
+    weight_mask = generate_weight_mask((h, w), center_decay)
+    weight_mask = torch.tensor(weight_mask, dtype=image.dtype, device=image.device).unsqueeze(0)
+    return image * weight_mask
 
 def preprocess_chansong(dp,probe):
     lbound,ubound=(23,38),(235,250)

@@ -83,7 +83,9 @@ class ptychosaxsNN:
         self.ptycho_hdf5=ptNN.load_hdf5_scan_to_npy(file_path=file_path,scan=scan,plot=False)
         self.scan=scan
         
-#%%                
+#%%
+outputs=[]
+inputs=[]         
 if __name__ == "__main__":
     x=ptychosaxsNN()
     #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
@@ -99,74 +101,84 @@ if __name__ == "__main__":
     x.model.eval()
     
 
-    #%%
+
 #    date_dir = '2024_Dec'
 #    exp_dir='JM03_3D_'
 #    scans=np.arange(706,720,1)
     
-    date_dir = '2024_Dec'
-    exp_dir='RC_01_'
-    #scans=np.arange(706,315,1)
-    scans=[315]
+    # date_dir = '2024_Dec'
+    # exp_dir='RC_01_'
+    # #scans=np.arange(706,315,1)
+    # scans=[315]
 
 
     date_dir = '2024_Dec'
     exp_dir='JM02_3D_'
     scans=np.arange(445,635,1)
-    #scans=[450]
+    #scans=[500]
     
     directory='results' #'test'
     #Ndp=1408
     Ndp=512
     for scan in scans:
-        #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
-        filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scan:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
-        #filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
-        data=ptNN.read_hdf5_file(filepath)
-        dps_copy = np.sum(data['dp'],axis=0)
-        
-        #dps_copy=np.load(Path("Y:/ptychosaxs/data/diff_sim/14/output_hanning_conv_00001.npz"))['convDP']
-        
-        
-        # # Load data
-        # scan=1125 #1115,1083,1098
-        # filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
-        # full_dps_orig=np.load(filename)
-        # full_dps=full_dps_orig.copy()
-        # for dp_pp in full_dps:
-        #     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
-        
-        # # Plot and return a full scan
-        # # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
-        
-        # # Summed scan 
-        # dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
-        
-        # # Specific frame
-        # index=230
-        # dps_copy=full_dps[index,1:513,259:771]
+        try:
+            #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+            filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scan:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+            #filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
+            data=ptNN.read_hdf5_file(filepath)
+            dps_copy = np.sum(data['dp'],axis=0)
+            
+            #dps_copy=np.load(Path("Y:/ptychosaxs/data/diff_sim/14/output_hanning_conv_00001.npz"))['convDP']
+            
+            
+            # # Load data
+            # scan=1125 #1115,1083,1098
+            # filename = path / f'data/cindy_scan{scan}_diffraction_patterns.npy'
+            # full_dps_orig=np.load(filename)
+            # full_dps=full_dps_orig.copy()
+            # for dp_pp in full_dps:
+            #     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
+            
+            # # Plot and return a full scan
+            # # inputs,outputs,sfs,bkgs=plot_and_save_scan(full_dps,x,scanx=20,scany=15)
+            
+            # # Summed scan 
+            # dps_copy=np.sum(full_dps[:,1:513,259:771],axis=0)
+            
+            # # Specific frame
+            # index=230
+            # dps_copy=full_dps[index,1:513,259:771]
 
-        # Preprocess and run data through NN
-        #mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
-        #d=ptNN.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly446/data_roi0_Ndp512_dp.hdf5')
-        d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
-        mask = np.sum(d['dp'],axis=0)<=0
-        
-        #mask=np.load(Path("Y:/") / f'{date_dir}/mask1408.npy')
-        mask=np.ones(mask.shape)-mask
-
-        resultT,sfT,bkgT=ptNN.preprocess_zhihua2(dps_copy,mask) # preprocess
-        resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
-        final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
-        
-        # Plot
-        fig,ax=plt.subplots(1,3)
-        im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
-        im2=ax[1].imshow(resultT[0][0],cmap='jet')
-        im3=ax[2].imshow(final,cmap='jet')
-        plt.colorbar(im1)
-        plt.colorbar(im2)
-        plt.colorbar(im3)
-        plt.show()
-
+            # Preprocess and run data through NN
+            #mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
+            #d=ptNN.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly446/data_roi0_Ndp512_dp.hdf5')
+            d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
+            mask = np.sum(d['dp'],axis=0)<=0
+            
+            #mask=np.load(Path("Y:/") / f'{date_dir}/mask1408.npy')
+            mask=np.ones(mask.shape)-mask
+            
+            center_decays=[0]#,0.01,0.1,0.3,0.5,0.8,1,1.5,2,3,4]
+            for c in center_decays:
+                resultT,sfT,bkgT=ptNN.preprocess_zhihua(dps_copy,mask,center_decay=c) # preprocess
+                resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
+                final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
+                
+                # Plot
+                fig,ax=plt.subplots(1,3)
+                im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
+                im2=ax[1].imshow(resultT[0][0],cmap='jet')
+                im3=ax[2].imshow(final,cmap='jet')
+                plt.colorbar(im1)
+                plt.colorbar(im2)
+                plt.colorbar(im3)
+                plt.show()
+                outputs.append(final)
+                inputs.append(resultT[0][0])
+        except:
+            print('error reading file')
+            continue
+outputs=np.asarray(outputs)
+inputs=np.asarray(inputs)
+np.savez("JM02_3D_deconv.npz",deconv=outputs,conv=inputs)
 # %%
