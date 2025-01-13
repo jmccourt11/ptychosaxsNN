@@ -89,7 +89,7 @@ inputs=[]
 if __name__ == "__main__":
     x=ptychosaxsNN()
     #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
-    local=True
+    local=False
     if local:
         path = Path("Y:/ptychosaxs")
     else:
@@ -106,25 +106,25 @@ if __name__ == "__main__":
 #    exp_dir='JM03_3D_'
 #    scans=np.arange(706,720,1)
     
-    # date_dir = '2024_Dec'
-    # exp_dir='RC_01_'
-    # #scans=np.arange(706,315,1)
-    # scans=[315]
-
-
     date_dir = '2024_Dec'
-    exp_dir='JM02_3D_'
-    scans=np.arange(445,635,1)
-    #scans=[500]
+    exp_dir='RC_01_'
+    #scans=np.arange(706,315,1)
+    scans=[315]
+
+
+#    date_dir = '2024_Dec'
+#    exp_dir='JM02_3D_'
+#    scans=np.arange(445,635,1)
+#    #scans=[500]
     
     directory='results' #'test'
-    #Ndp=1408
-    Ndp=512
+    Ndp=1408
+    #Ndp=512
     for scan in scans:
         try:
             #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
-            filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scan:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
-            #filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
+            #filepath=Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly{scan:03d}/data_roi0_Ndp{Ndp}_dp.hdf5'
+            filepath=Path(f'/net/micdata/data2/12IDC/{date_dir}/{directory}/{exp_dir}/fly{scans[0]:03d}/data_roi0_Ndp{Ndp}_dp.hdf5')
             data=ptNN.read_hdf5_file(filepath)
             dps_copy = np.sum(data['dp'],axis=0)
             
@@ -152,23 +152,29 @@ if __name__ == "__main__":
             # Preprocess and run data through NN
             #mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
             #d=ptNN.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly446/data_roi0_Ndp512_dp.hdf5')
-            d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
-            mask = np.sum(d['dp'],axis=0)<=0
+            
+            
+            #d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
+            #mask = np.sum(d['dp'],axis=0)<=0
             
             #mask=np.load(Path("Y:/") / f'{date_dir}/mask1408.npy')
+            mask=np.load(Path(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy'))
             mask=np.ones(mask.shape)-mask
+            waxs_mask=np.load("/home/beams/PTYCHOSAXS/NN/waxs_mask.npy")
+           
             
             center_decays=[0]#,0.01,0.1,0.3,0.5,0.8,1,1.5,2,3,4]
             for c in center_decays:
-                resultT,sfT,bkgT=ptNN.preprocess_zhihua(dps_copy,mask,center_decay=c) # preprocess
+                #resultT,sfT,bkgT=ptNN.preprocess_zhihua(dps_copy,mask,center_decay=c) # preprocess
+                resultT,sfT,bkgT=ptNN.preprocess_zhihua2(dps_copy,mask,waxs_mask) # preprocess
                 resultTa=resultT.to(device=x.device, dtype=torch.float) #convert to tensor and send to device
                 final=x.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
                 
                 # Plot
                 fig,ax=plt.subplots(1,3)
                 im1=ax[0].imshow(dps_copy,norm=colors.LogNorm(),cmap='jet')
-                im2=ax[1].imshow(resultT[0][0],cmap='jet')
-                im3=ax[2].imshow(final,cmap='jet')
+                im2=ax[1].imshow(resultT[0][0],clim=(np.max(resultT[0][0].numpy())-0.2,np.max(resultT[0][0].numpy())),cmap='jet')
+                im3=ax[2].imshow(final,clim=(np.max(final)-0.2,np.max(final)),cmap='jet')
                 plt.colorbar(im1)
                 plt.colorbar(im2)
                 plt.colorbar(im3)
@@ -178,7 +184,7 @@ if __name__ == "__main__":
         except:
             print('error reading file')
             continue
-outputs=np.asarray(outputs)
-inputs=np.asarray(inputs)
-np.savez("JM02_3D_deconv.npz",deconv=outputs,conv=inputs)
+#outputs=np.asarray(outputs)
+#inputs=np.asarray(inputs)
+#np.savez("JM02_3D_deconv.npz",deconv=outputs,conv=inputs)
 # %%
