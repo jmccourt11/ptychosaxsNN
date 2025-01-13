@@ -89,12 +89,12 @@ inputs=[]
 if __name__ == "__main__":
     x=ptychosaxsNN()
     #path = os.path.abspath(os.path.join(os.getcwd(), '../'))
-    local=False
+    local=True
     if local:
         path = Path("Y:/ptychosaxs")
     else:
         path = Path('/net/micdata/data2/12IDC/ptychosaxs/')
-        
+    #%%    
     x.load_model(state_dict_pth=path / 'trained_model/best_model.pth')   
     x.set_device()
     x.model.to(x.device)
@@ -116,7 +116,7 @@ if __name__ == "__main__":
 #    exp_dir='JM02_3D_'
 #    scans=np.arange(445,635,1)
 #    #scans=[500]
-    
+    #%%
     directory='results' #'test'
     Ndp=1408
     #Ndp=512
@@ -153,13 +153,18 @@ if __name__ == "__main__":
             #mask=np.load(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy')
             #d=ptNN.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly446/data_roi0_Ndp512_dp.hdf5')
             
-            
-            #d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
-            #mask = np.sum(d['dp'],axis=0)<=0
-            
+            #%%
+            d=ptNN.read_hdf5_file(Path("Y:/") / f'{date_dir}/{directory}/{exp_dir}/fly482/data_roi0_Ndp{Ndp}_dp.hdf5')
+            mask = np.sum(d['dp'],axis=0)<=0
+            #%%
             #mask=np.load(Path("Y:/") / f'{date_dir}/mask1408.npy')
-            mask=np.load(Path(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy'))
+            #mask=np.load(Path(f'/net/micdata/data2/12IDC/{date_dir}/mask1408.npy'))
             mask=np.ones(mask.shape)-mask
+            
+            plt.figure()
+            plt.imshow(mask,cmap='jet')
+            plt.show()
+            #%%
             waxs_mask=np.load("/home/beams/PTYCHOSAXS/NN/waxs_mask.npy")
            
             

@@ -35,8 +35,8 @@ def pad_with(vector, pad_width, iaxis, kwargs):
     vector[-pad_width[1]:] = pad_value
     
     
-save=True #save files
-plot=False
+save=False #save files
+plot=True
 dr='15' #save location
 data_location='/mnt/micdata2/12IDC/ptychosaxs/data/diff_sim/5/'
 
@@ -50,7 +50,7 @@ with cp.cuda.Device(1): #select last GPU (i.e. 4 gpus, index of last one is 3)
     #probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly318/roi0_Ndp256/MLc_L1_p10_g1000_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
     
     #Cindy probe
-    #probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly308/roi0_Ndp512/MLc_L1_p10_gInf_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLs_L1_p10_g100_Ndp512_pc100_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
+    probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly308/roi0_Ndp512/MLc_L1_p10_gInf_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLs_L1_p10_g100_Ndp512_pc100_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
 
     #Zhihua probe
     probe=loadmat("/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly482/roi2_Ndp1024/MLc_L1_p10_gInf_Ndp256_mom0.5_pc100_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g400_Ndp512_mom0.5_pc400_noModelCon_bg0.1_vp4_vi_mm/Niter1000.mat")['probe'].T[0][0].T
