@@ -415,16 +415,26 @@ def load_h5_scan_to_npy(file_path,scan,plot=True):
     # scan = 1125 (e.g.)
     dps=[]
     file_path_new=find_directories_with_number(file_path,scan)[0]
-    for filename in os.listdir(file_path_new)[:-1]:
+    for filename in tqdm(os.listdir(file_path_new)[:-1]):
         filename = file_path_new / filename
+        #print(filename)
+        #print(read_hdf5_file(filename).keys())
         data = read_hdf5_file(filename)['entry/data/data']
-        print(filename)
-        for j in range(0,len(data)):
-            dps.append(data[j])
+
+        point=True
+        if point:
+            dps.append(data)
             if plot:
                 plt.figure()
-                plt.imshow(data[j],norm=colors.LogNorm())
+                plt.imshow(data,norm=colors.LogNorm())
                 plt.show()
+        else:
+            for j in range(0,len(data)):
+                dps.append(data[j])
+                if plot:
+                    plt.figure()
+                    plt.imshow(data[j],norm=colors.LogNorm())
+                    plt.show()
     dps=np.asarray(dps)
     return dps
 
