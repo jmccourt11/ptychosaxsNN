@@ -417,7 +417,7 @@ def load_h5_scan_to_npy(file_path,scan,plot=True):
     file_path_new=find_directories_with_number(file_path,scan)[0]
     for filename in tqdm(os.listdir(file_path_new)[:-1]):
         filename = file_path_new / filename
-        #print(filename)
+        print(filename)
         #print(read_hdf5_file(filename).keys())
         data = read_hdf5_file(filename)['entry/data/data']
 
