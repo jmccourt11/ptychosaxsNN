@@ -421,7 +421,8 @@ def load_h5_scan_to_npy(file_path,scan,plot=True):
         #print(read_hdf5_file(filename).keys())
         data = read_hdf5_file(filename)['entry/data/data']
 
-        point=True
+        point=False#True#False
+        
         if point:
             dps.append(data)
             if plot:
@@ -444,6 +445,7 @@ def load_hdf5_scan_to_npy(file_path,scan,plot=True):
     # scan = 1125 (e.g.)
     dps=[]
     file_path_new=find_directories_with_number(file_path,scan)[0]
+    print(file_path_new)
     for filename in os.listdir(file_path_new)[:-1]:
         filename = file_path_new / filename
         read_hdf5_file(file_path_new / filename).keys()

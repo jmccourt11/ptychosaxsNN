@@ -14,8 +14,8 @@ import importlib
 #from utils.ptychosaxsNN_utils import * # run into issues with reimporting
 import utils.ptychosaxsNN_utils as ptNN
 importlib.reload(ptNN)
-#from models.UNet import recon_model
-from models.UNet512x512 import recon_model
+from models.UNet import recon_model
+#from models.UNet512x512 import recon_model
 #sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../deconvolutionNN/'))) 
 #import deconvolutionNN
 #%%
