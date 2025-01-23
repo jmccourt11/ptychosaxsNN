@@ -23,12 +23,10 @@ importlib.reload(ptNN)
 
 #%%
 # basepath
-#basepath=Path('Y:/2024_Dec/misc/dps/RC02_3D/')
-basepath=Path('/net/micdata/data2/12IDC/2024_Dec/misc/dps/RC02_3D')
+#basepath=Path('Y:/2024_Dec/ptycho/')
 
 
 # load dps
-#26*37 dps
 
 # filepath=basepath / 'full_scan_888.npy'
 # print(f'file: {filepath}')
@@ -36,22 +34,23 @@ basepath=Path('/net/micdata/data2/12IDC/2024_Dec/misc/dps/RC02_3D')
 # dps_sum = np.sum(dps,axis=0)
 # full_dps=dps[:]
 
-dps = ptNN_U.load_h5_scan_to_npy(Path(f'/net/micdata/data2/12IDC/2024_Dec/ptycho/'),911,plot=False)
+dps = ptNN_U.load_h5_scan_to_npy(Path(f'/net/micdata/data2/12IDC/2024_Dec/ptycho/'),455,plot=False)
 dps_sum=np.sum(dps,axis=0)
 full_dps=dps
 
 dps_size=dps[0].shape
 offset=100
-full_dps=full_dps.copy()[:,dps_size[0]//2-offset - 640:dps_size[0]//2-offset + 640,dps_size[1]//2 - 640:dps_size[1]//2 + 640]
+dpsize=512#1280
+full_dps=full_dps.copy()[:,dps_size[0]//2-offset - dpsize//2:dps_size[0]//2-offset + dpsize//2,dps_size[1]//2 - dpsize//2:dps_size[1]//2 + dpsize//2]
 for i,dp_pp in enumerate(full_dps):
     dp_pp[dp_pp >= 2**16-1] = np.min(dp_pp) #get rid of hot pixel
 
 
 # Convert row/col indices to linear indices in the DPS array
 col_start = 0
-col_end = 37  # Total width is 37
+col_end = 41 #37  # Total width is 37
 row_start = 0
-row_end = 26  # Total height is 26
+row_end = 39 #26  # Total height is 26
 
 grid_size_col=col_end-col_start
 grid_size_row=row_end-row_start
@@ -80,10 +79,51 @@ plt.show()
 
 
 
+
+
 full_dps=dp_test
 dps_sum=np.sum(full_dps,axis=0)
 # plot frames
 count=0
+
+
+
+#%%
+# Load model
+m=ptNN.ptychosaxsNN()
+path=Path('/net/micdata/data2/12IDC/ptychosaxs/')
+model_path='models/best_model_diff_sim15_zhihua_JM02_3D.pth'
+# peak_params
+center_cut=75
+n=10
+threshold=0.25
+m.load_model(state_dict_pth=path / model_path)
+m.set_device()
+m.model.to(m.device)
+m.model.eval()
+
+
+
+
+# Preprocess and run data through NN
+mask = np.where(dps_sum <= 0, 0, 1)
+resultT,sfT,bkgT=ptNN_U.preprocess_zhihua(dps_sum,mask) # preprocess
+resultTa=resultT.to(device=m.device, dtype=torch.float) #convert to tensor and send to device
+final=m.model(resultTa).detach().to("cpu").numpy()[0][0] #pass through model and convert to np.array
+
+
+
+fig,ax=plt.subplots(1,3)
+im1=ax[0].imshow(dps_sum,norm=colors.LogNorm())
+im2=ax[1].imshow(resultT[0][0])
+im3=ax[2].imshow(final)
+plt.colorbar(im1)
+plt.colorbar(im2)
+plt.colorbar(im3)
+plt.show()
+
+#%%
+
 
 # peaks=ptNN_U.find_peaks2d(final,center_cut=center_cut,n=n,threshold=threshold,plot=False)
 

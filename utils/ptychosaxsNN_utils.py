@@ -411,7 +411,7 @@ def find_directories_with_number(base_path, number):
 
     return [Path(m) for m in matching_dirs]
     
-def load_h5_scan_to_npy(file_path,scan,plot=True):
+def load_h5_scan_to_npy(file_path,scan,plot=True,point_data=True):
     # For loading cindy ptycho scan data
     # file_path = '/net/micdata/data2/12IDC/2021_Nov/ptycho/'
     # scan = 1125 (e.g.)
@@ -422,10 +422,8 @@ def load_h5_scan_to_npy(file_path,scan,plot=True):
         #print(filename)
         #print(read_hdf5_file(filename).keys())
         data = read_hdf5_file(filename)['entry/data/data']
-
-        point=True#False
         
-        if point:
+        if point_data:
             dps.append(data)
             if plot:
                 plt.figure()
