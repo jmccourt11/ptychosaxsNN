@@ -34,7 +34,7 @@ importlib.reload(ptNN)
 # dps_sum = np.sum(dps,axis=0)
 # full_dps=dps[:]
 
-dps = ptNN_U.load_h5_scan_to_npy(Path(f'/net/micdata/data2/12IDC/2024_Dec/ptycho/'),455,plot=False)
+dps = ptNN_U.load_h5_scan_to_npy(Path(f'/net/micdata/data2/12IDC/2024_Dec/ptycho/'),578,plot=False)
 dps_sum=np.sum(dps,axis=0)
 full_dps=dps
 

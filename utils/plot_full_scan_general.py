@@ -307,7 +307,7 @@ class DiffractionAnalyzer:
             ax[1].add_patch(circle)
         
         # Add colorwheel legend - adjust position to be closer to ax[0]
-        ax_wheel = fig.add_axes([0.2, 0.84, 0.2, 0.02])  # [left, bottom, width, height]
+        ax_wheel = fig.add_axes([0.2, 0.88, 0.2, 0.02])  # [left, bottom, width, height]
         norm = plt.Normalize(0, 360)
         cb = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=orientation_cmap), 
                          cax=ax_wheel, orientation='horizontal')
@@ -392,7 +392,10 @@ class DiffractionAnalyzer:
 
 
 # Example usage
-scans=np.arange(1053,1287,1)
+#scans=np.arange(1670,1685,1) 
+#scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
+scans=[1635]
+#scans=np.arange(1053,1167,1) #Box/12IDC_3D/Sample4/tomo4
 for scan in scans:
     try:
         analyzer = DiffractionAnalyzer(
@@ -401,7 +404,7 @@ for scan in scans:
             dp_size=512,
             center_offset_y=0,  # Vertical offset
             center_offset_x=0,    # Horizontal offset
-            center_cut=75,
+            center_cut=64,#75,
             n_peaks=10,
             peak_threshold=0.25
         )
@@ -421,7 +424,8 @@ for scan in scans:
 
         # Generate plots
         analyzer.plot_deconvolution_results()
-        analyzer.plot_full_scan(grid_size_row=15, grid_size_col=20) 
+        #analyzer.plot_full_scan(grid_size_row=15, grid_size_col=20) 
+        analyzer.plot_full_scan(grid_size_row=12, grid_size_col=11) 
 
         # Save peak analysis
         analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')

@@ -461,7 +461,7 @@ def load_hdf5_scan_to_npy(file_path,scan,plot=True):
                     plt.show()
     dps=np.asarray(dps)
     return dps
-    
+
 def create_annular_mask(shape, peak_x,peak_y, r_outer):
     """Create an annular mask between r_inner and r_outer centered at 'center'."""
     y, x = np.ogrid[:shape[0], :shape[1]]
@@ -505,3 +505,78 @@ def ensure_inverse_peaks(peaks: List[Tuple[int, int]], tolerance: int = 4) -> Li
             result_peaks.append((inv_p1, inv_p2))
     
     return result_peaks
+
+def plot_scan_positions(param_file, plot=True):
+    """
+    Load and plot scan positions from parameter file with connecting line
+    
+    Args:
+        param_file (str): Full path to parameter file
+        plot (bool): Whether to show the plot (default: True)
+        
+    Example:
+        x_pos, y_pos = plot_scan_positions('/net/micdata/data2/12IDC/2021_Nov/results/ML_recon/tomo_scan3/scan1053/data_roi0_Ndp512_para.hdf5', plot=True)
+    
+    Returns:
+        tuple: Arrays of X and Y positions
+    """
+    # Load data
+    data = read_hdf5_file(param_file)
+    pos_x = data['ppX']
+    pos_y = data['ppY']
+    
+    if plot:
+        # Create figure
+        plt.figure(figsize=(10, 10))
+        
+        # Find unique y positions to identify rows
+        unique_y = np.unique(pos_y)
+        
+        # Store end points of each row
+        row_ends = []
+        next_row_starts = []
+        
+        # Plot horizontal lines connecting points in each row
+        for i, y in enumerate(unique_y):
+            # Get all points in this row
+            mask = pos_y == y
+            x_row = pos_x[mask]
+            y_row = pos_y[mask]
+            
+            # Sort points by x position
+            sort_idx = np.argsort(x_row)
+            x_row = x_row[sort_idx]
+            y_row = y_row[sort_idx]
+            
+            # Plot the connecting line
+            plt.plot(x_row, y_row, '-', color='red', alpha=0.25, linewidth=3)
+            
+            # Store end points for connecting between rows
+            if i < len(unique_y) - 1:
+                row_ends.append((x_row[-1], y_row[-1]))
+                # Get start of next row
+                next_y = unique_y[i + 1]
+                next_mask = pos_y == next_y
+                next_x = pos_x[next_mask]
+                next_y = pos_y[next_mask]
+                sort_idx = np.argsort(next_x)
+                next_row_starts.append((next_x[sort_idx][0], next_y[sort_idx][0]))
+        
+        # Draw connecting lines between rows
+        for i in range(len(row_ends)):
+            plt.plot([row_ends[i][0], next_row_starts[i][0]], 
+                    [row_ends[i][1], next_row_starts[i][1]], 
+                    '--', color='red', alpha=0.25, linewidth=1.5)
+        
+        # Plot all points
+        plt.scatter(pos_x, pos_y, color='red', s=20)
+        
+        plt.title('Scan Positions')
+        plt.xlabel('X Position')
+        plt.ylabel('Y Position')
+        plt.axis('equal')  # Make aspect ratio 1:1
+        plt.grid(True)
+        plt.gca().invert_yaxis()  # Invert y-axis
+        plt.show()
+    
+    return pos_x, pos_y
