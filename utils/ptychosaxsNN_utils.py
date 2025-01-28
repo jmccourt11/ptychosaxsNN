@@ -14,6 +14,9 @@ from typing import List, Tuple
 import pyFAI
 from pathlib import Path
 import re
+from sklearn.cluster import DBSCAN
+import plotly.graph_objects as go
+import webbrowser
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -580,3 +583,281 @@ def plot_scan_positions(param_file, plot=True):
         plt.show()
     
     return pos_x, pos_y
+
+def convert_2D_to_3D_peaks(x, y, phi_angle):
+    """
+    Convert 2D detector peak positions to 3D coordinates
+    
+    Args:
+        x (float): X position on detector
+        y (float): Y position on detector
+        phi_angle (float): Rotation angle in degrees around y-axis
+            
+    Returns:
+        tuple: (x3d, y3d, z3d) coordinates
+    """
+    # Convert angle to radians
+    phi = np.radians(phi_angle)
+    
+    # Apply rotation around y-axis
+    # x' = x*cos(phi) + z*sin(phi)
+    # y' = y
+    # z' = -x*sin(phi) + z*cos(phi)
+    x3d = x * np.cos(phi)  # z=0 at detector, so z*sin(phi) term is 0
+    y3d = y  # y-axis is rotation axis, no change
+    z3d = -x * np.sin(phi)  # z=0 at detector, so z*cos(phi) term is 0
+    
+    return x3d, y3d, z3d
+
+def visualize_3D_peaks(peaks_list, phi_angles, intensities_list=None, save_path=None):
+    """
+    Visualize peaks from multiple projections in 3D space
+    
+    Args:
+        peaks_list (list): List of peak positions [(x1,y1), (x2,y2), ...] for each angle
+        phi_angles (list): List of rotation angles in degrees
+        intensities_list (list, optional): List of intensities for each peak
+        save_path (str, optional): Path to save the HTML file
+    """
+    fig = go.Figure()
+    
+    # Convert all peaks to 3D coordinates
+    for i, (peaks, phi) in enumerate(zip(peaks_list, phi_angles)):
+        x3d_list = []
+        y3d_list = []
+        z3d_list = []
+        hover_texts = []
+        
+        for j, (x, y) in enumerate(peaks):
+            x3d, y3d, z3d = convert_2D_to_3D_peaks(x, y, phi)
+            x3d_list.append(x3d)
+            y3d_list.append(y3d)
+            z3d_list.append(z3d)
+            
+            # Create hover text
+            intensity_text = f"Intensity: {intensities_list[i][j]:.1f}<br>" if intensities_list else ""
+            hover_texts.append(
+                f"Detector X: {x:.1f}<br>"
+                f"Detector Y: {y:.1f}<br>"
+                f"Phi: {phi:.1f}°<br>"
+                f"{intensity_text}"
+                f"3D X: {x3d:.3f}<br>"
+                f"3D Y: {y3d:.3f}<br>"
+                f"3D Z: {z3d:.3f}"
+            )
+        
+        # Define marker properties
+        marker_props = {
+            'size': 8,
+            'opacity': 0.7,
+            'line': dict(width=2, color='white')
+        }
+        
+        if intensities_list:
+            marker_props.update({
+                'color': intensities_list[i],
+                'colorscale': 'Viridis',
+                'colorbar': dict(
+                    title="Intensity",
+                    len=0.8,
+                    y=0.8
+                )
+            })
+        else:
+            marker_props['color'] = phi  # Color by angle if no intensities
+        
+        # Add scatter plot for this angle
+        fig.add_trace(go.Scatter3d(
+            x=x3d_list,
+            y=y3d_list,
+            z=z3d_list,
+            mode='markers',
+            name=f'Phi={phi:.1f}°',
+            marker=marker_props,
+            hovertemplate="%{text}<extra></extra>",
+            text=hover_texts,
+            showlegend=True
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title="3D Diffraction Peak Positions",
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode='cube',  # Equal scaling
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=1.5)
+            ),
+            bgcolor='white'
+        ),
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="right",
+            x=0.99,
+            itemsizing='constant'
+        ),
+        paper_bgcolor='white'
+    )
+    
+    # Save HTML file if path provided
+    if save_path:
+        fig.write_html(save_path)
+        print(f"Saved interactive visualization to {save_path}")
+    
+    # Show figure
+    fig.show()
+    
+    return fig
+
+def group_3D_peaks(peaks_list, phi_angles, tolerance=0.1):
+    """
+    Group peaks that likely belong to the same 3D feature
+    based on their positions and projection angles
+    
+    Args:
+        peaks_list (list): List of peak positions [(x1,y1), (x2,y2), ...] for each angle
+        phi_angles (list): List of rotation angles in degrees
+        tolerance (float): Distance tolerance for grouping peaks in 3D space
+        
+    Returns:
+        dict: Groups of peaks that belong to the same 3D feature
+    """
+    # Convert all 2D peaks to 3D coordinates
+    all_points_3d = []
+    peak_info = []  # Store original peak info
+    
+    for peaks, phi in zip(peaks_list, phi_angles):
+        for x, y in peaks:
+            x3d, y3d, z3d = convert_2D_to_3D_peaks(x, y, phi)
+            all_points_3d.append([x3d, y3d, z3d])
+            peak_info.append({
+                'original_x': x,
+                'original_y': y,
+                'phi': phi,
+                'x3d': x3d,
+                'y3d': y3d,
+                'z3d': z3d
+            })
+    
+    # Convert to numpy array for clustering
+    points_array = np.array(all_points_3d)
+    
+    # Perform DBSCAN clustering
+    clustering = DBSCAN(eps=tolerance, min_samples=2).fit(points_array)
+    labels = clustering.labels_
+    
+    # Group peaks by cluster
+    groups = {}
+    for idx, label in enumerate(labels):
+        if label >= 0:  # Ignore noise points (label = -1)
+            if label not in groups:
+                groups[label] = []
+            groups[label].append(peak_info[idx])
+    
+    return groups
+
+def visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.1):
+    """
+    Visualize peaks grouped by their 3D proximity, showing only group centers
+    
+    Args:
+        peaks_list (list): List of peak positions [(x1,y1), (x2,y2), ...] for each angle
+        phi_angles (list): List of rotation angles in degrees
+        tolerance (float): Distance tolerance for grouping peaks in 3D space
+    """
+    import plotly.graph_objects as go
+    
+    # First, group the peaks using DBSCAN
+    groups = group_3D_peaks(peaks_list, phi_angles, tolerance)
+    
+    # Create visualization
+    fig = go.Figure()
+    
+    # Use different colors for different groups
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(groups)))
+    
+    # Store all centers for range calculation
+    all_centers = []
+    
+    # Plot each group center
+    for group_id, peaks in groups.items():
+        positions = np.array([[p['x3d'], p['y3d'], p['z3d']] for p in peaks])
+        center = np.mean(positions, axis=0)
+        all_centers.append(center)
+        
+        # Format phi angles string
+        phi_angles_str = ', '.join(f"{p['phi']:.1f}°" for p in peaks)
+        
+        # Add group center marker
+        fig.add_trace(go.Scatter3d(
+            x=[center[0]],
+            y=[center[1]],
+            z=[center[2]],
+            mode='markers',
+            name=f'Group {group_id}',
+            marker=dict(
+                size=15,
+                symbol='diamond',
+                color=f'rgb({int(colors[group_id][0]*255)},{int(colors[group_id][1]*255)},{int(colors[group_id][2]*255)})',
+                opacity=1,
+                line=dict(width=2, color='white')
+            ),
+            hovertemplate=(
+                f"Group {group_id}<br>" +
+                "X: %{x:.3f}<br>" +
+                "Y: %{y:.3f}<br>" +
+                "Z: %{z:.3f}<br>" +
+                f"Points in group: {len(peaks)}<br>" +
+                f"Phi angles: {phi_angles_str}<br>" +
+                "<extra></extra>"
+            )
+        ))
+    
+    # Calculate ranges for all centers
+    all_centers = np.array(all_centers)
+    x_range = [all_centers[:, 0].min(), all_centers[:, 0].max()]
+    y_range = [all_centers[:, 1].min(), all_centers[:, 1].max()]
+    z_range = [all_centers[:, 2].min(), all_centers[:, 2].max()]
+    
+    # Add padding to ranges
+    padding = 0.2  # 20% padding
+    x_pad = (x_range[1] - x_range[0]) * padding
+    y_pad = (y_range[1] - y_range[0]) * padding
+    z_pad = (z_range[1] - z_range[0]) * padding
+    
+    # Update layout
+    fig.update_layout(
+        title="Grouped 3D Diffraction Peaks (Centers)",
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=2, y=2, z=2)
+            ),
+            bgcolor='white',
+            xaxis=dict(range=[x_range[0]-x_pad, x_range[1]+x_pad]),
+            yaxis=dict(range=[y_range[0]-y_pad, y_range[1]+y_pad]),
+            zaxis=dict(range=[z_range[0]-z_pad, z_range[1]+z_pad])
+        ),
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.0,
+            itemsizing='constant',
+            bgcolor="rgba(255, 255, 255, 0.8)"
+        ),
+        paper_bgcolor='white',
+        width=1000,
+        height=800,
+        margin=dict(r=150)
+    )
+    
+    return fig

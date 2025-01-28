@@ -18,7 +18,7 @@ import ptychosaxsNN.ptychosaxsNN as ptNN
 importlib.reload(ptNN_U)
 importlib.reload(ptNN)
 
-
+#%%
 class DiffractionAnalyzer:
     def __init__(self, base_path, scan_number, dp_size=512, center_offset_y=100, center_offset_x=0,
                  center_cut=75, n_peaks=10, peak_threshold=0.25):
@@ -396,8 +396,10 @@ class DiffractionAnalyzer:
 #scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
 scans=[1635]
 #scans=np.arange(1053,1167,1) #Box/12IDC_3D/Sample4/tomo4
+#%%
 for scan in scans:
     try:
+        #%%
         analyzer = DiffractionAnalyzer(
             base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
             scan_number=scan,
@@ -421,7 +423,7 @@ for scan in scans:
 
         # Analyze the automatically detected peaks
         analyzer.analyze_peaks(radius=64)
-
+        #%%
         # Generate plots
         analyzer.plot_deconvolution_results()
         #analyzer.plot_full_scan(grid_size_row=15, grid_size_col=20) 
@@ -431,4 +433,63 @@ for scan in scans:
         analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
     except:
         print(f"Error for scan {scan}")
+
+
+#%%
+#scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
+# Read the file, skipping the first row (which starts with #) and using the second row as headers
+df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_projs_1537_1789_shifts.txt', 
+                 comment='#',  # Skip lines starting with #
+                 names=['Angle', 'y_shift', 'x_shift', 'scanNo'])  # Specify column names
+
+# Convert scanNo to integer if needed
+df['scanNo'] = df['scanNo'].astype(int)
+
+# Get angle for a specific scan number
+def get_angle_for_scan(df, scan_number):
+    return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
+
+scans=df['scanNo'].astype(int)
+peaks_list=[]
+phi_angles=[]
+for scan in scans:
+    try:
+        angle = get_angle_for_scan(df, scan)  # Returns -57.5
+        print(angle)
+        analyzer = DiffractionAnalyzer(
+            base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
+            scan_number=scan,
+            dp_size=512,
+            center_offset_y=0,  # Vertical offset
+            center_offset_x=0,    # Horizontal offset
+            center_cut=64,#75,
+            n_peaks=10,
+            peak_threshold=0.25
+        )
+
+        # Load and process data
+        analyzer.load_and_crop_data()
+
+
+        # Load model and perform deconvolution (which now includes peak finding)
+        #model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_diff_sim15_zhihua_JM02_3D.pth')
+        model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
+        analyzer.load_model(model_path)
+        analyzer.perform_deconvolution()
+
+        # Analyze the automatically detected peaks
+        analyzer.analyze_peaks(radius=64)
+        peaks = analyzer.peaks
+        # for peak in peaks:  
+        #     x, y, z = ptNN_U.convert_2D_to_3D_peaks(peak[0], peak[1], phi_angle=angle)
+        #     print(x, y)
+        peaks_list.append(peaks)
+        phi_angles.append(angle)    
+    except:
+        print(f"Error for scan {scan}")
+#%%
+ptNN_U.visualize_3D_peaks(peaks_list, phi_angles)
+# Visualize grouped peaks
+fig = ptNN_U.visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.02)
+fig.show()
 # %%
