@@ -399,7 +399,6 @@ scans=[1635]
 #%%
 for scan in scans:
     try:
-        #%%
         analyzer = DiffractionAnalyzer(
             base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
             scan_number=scan,
@@ -449,47 +448,69 @@ df['scanNo'] = df['scanNo'].astype(int)
 def get_angle_for_scan(df, scan_number):
     return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
 
-scans=df['scanNo'].astype(int)
-peaks_list=[]
-phi_angles=[]
+# Load model once before the loop
+model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
+analyzer = DiffractionAnalyzer(
+    base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
+    scan_number=0,  # Placeholder scan number
+    dp_size=512,
+    center_offset_y=0,
+    center_offset_x=0,
+    center_cut=64,
+    n_peaks=10,
+    peak_threshold=0.25
+)
+analyzer.load_model(model_path)
+
+scans = df['scanNo'].astype(int)
+peaks_list = []
+phi_angles = []
+dps_list = []
+
 for scan in scans:
     try:
-        angle = get_angle_for_scan(df, scan)  # Returns -57.5
+        angle = get_angle_for_scan(df, scan)
         print(angle)
-        analyzer = DiffractionAnalyzer(
-            base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
-            scan_number=scan,
-            dp_size=512,
-            center_offset_y=0,  # Vertical offset
-            center_offset_x=0,    # Horizontal offset
-            center_cut=64,#75,
-            n_peaks=10,
-            peak_threshold=0.25
-        )
-
+        
+        # Update scan number for current iteration
+        analyzer.scan_number = scan
+        
         # Load and process data
         analyzer.load_and_crop_data()
-
-
-        # Load model and perform deconvolution (which now includes peak finding)
-        #model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_diff_sim15_zhihua_JM02_3D.pth')
-        model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
-        analyzer.load_model(model_path)
+        
+        # Perform deconvolution using already loaded model
         analyzer.perform_deconvolution()
-
+        
         # Analyze the automatically detected peaks
         analyzer.analyze_peaks(radius=64)
-        peaks = analyzer.peaks
-        # for peak in peaks:  
-        #     x, y, z = ptNN_U.convert_2D_to_3D_peaks(peak[0], peak[1], phi_angle=angle)
-        #     print(x, y)
-        peaks_list.append(peaks)
+        
+        # Append to lists
+        peaks_list.append(analyzer.peaks)
+        dps_list.append(analyzer.deconvolved)
         phi_angles.append(angle)    
     except:
         print(f"Error for scan {scan}")
 #%%
 ptNN_U.visualize_3D_peaks(peaks_list, phi_angles)
 # Visualize grouped peaks
-fig = ptNN_U.visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.02)
+fig = ptNN_U.visualize_grouped_peaks(peaks_list, phi_angles, tolerance=48)
+fig.show()
+# %%
+ptNN_U.group_3D_peaks(peaks_list, phi_angles, tolerance=64).keys()
+
+
+
+
+
+
+# %%
+# Visualize 3D diffraction patterns (256x256)
+fig = ptNN_U.visualize_3D_diffraction_patterns(
+    dps_list,
+    phi_angles,
+    intensity_threshold=0.35,
+    downsample_factor=4,
+    center_cutoff=48  # Exclude points within 20 pixels of center
+)
 fig.show()
 # %%

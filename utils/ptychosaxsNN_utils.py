@@ -861,3 +861,161 @@ def visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.1):
     )
     
     return fig
+
+def convert_dp_to_3D(dp, phi_angle, intensity_threshold=0, downsample_factor=4, center_cutoff=0):
+    """
+    Convert a 2D diffraction pattern to 3D coordinates with downsampling
+    
+    Args:
+        dp (np.ndarray): 2D diffraction pattern (256x256)
+        phi_angle (float): Rotation angle in degrees
+        intensity_threshold (float): Minimum intensity to consider
+        downsample_factor (int): Factor by which to downsample the pattern
+        center_cutoff (float): Radius of central region to exclude (in pixels)
+    """
+    # Verify input shape
+    if dp.shape != (256, 256):
+        raise ValueError(f"Expected diffraction pattern of shape (256, 256), got {dp.shape}")
+    
+    # Downsample the pattern
+    dp_small = dp[::downsample_factor, ::downsample_factor]
+    
+    # Get coordinates of points above threshold
+    y_coords, x_coords = np.where(dp_small > intensity_threshold)
+    intensities = dp_small[y_coords, x_coords]
+    
+    # Scale coordinates back to original size
+    x_coords = x_coords * downsample_factor
+    y_coords = y_coords * downsample_factor
+    
+    # Center coordinates around (0,0)
+    x_coords = x_coords - 128
+    y_coords = y_coords - 128
+    
+    # Apply center cutoff
+    if center_cutoff > 0:
+        radii = np.sqrt(x_coords**2 + y_coords**2)
+        mask = radii >= center_cutoff
+        x_coords = x_coords[mask]
+        y_coords = y_coords[mask]
+        intensities = intensities[mask]
+        
+        if len(x_coords) == 0:  # Return early if no points remain
+            return np.array([]), np.array([])
+    
+    # Convert each point to 3D
+    positions = []
+    for x, y in zip(x_coords, y_coords):
+        # Apply rotation around y-axis
+        phi_rad = np.radians(phi_angle)
+        x3d = x * np.cos(phi_rad)
+        y3d = y
+        z3d = -x * np.sin(phi_rad)  # Note the negative sign for correct rotation
+        positions.append([x3d, y3d, z3d])
+    
+    return np.array(positions), intensities
+
+def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, downsample_factor=4, center_cutoff=0):
+    """
+    Convert and visualize diffraction patterns in 3D space
+    
+    Args:
+        dps (list): List of 2D diffraction patterns (256x256)
+        phi_angles (list): List of rotation angles in degrees
+        intensity_threshold (float): Minimum intensity to consider
+        downsample_factor (int): Factor by which to downsample the patterns
+        center_cutoff (float): Radius of central region to exclude (in pixels)
+    """
+    import plotly.graph_objects as go
+    from tqdm import tqdm
+    
+    print(f"Converting diffraction patterns to 3D points (center cutoff: {center_cutoff} pixels)...")
+    
+    # Create visualization
+    fig = go.Figure()
+    
+    # Use different colors for different angles
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(phi_angles)))
+    
+    # Convert and plot each diffraction pattern
+    for i, (dp, phi) in enumerate(tqdm(zip(dps, phi_angles), total=len(dps))):
+        positions, intensities = convert_dp_to_3D(dp, phi, intensity_threshold, downsample_factor, center_cutoff)
+        
+        if len(positions) > 0:  # Only plot if points were found
+            fig.add_trace(go.Scatter3d(
+                x=positions[:, 0],
+                y=positions[:, 1],
+                z=positions[:, 2],
+                mode='markers',
+                name=f'Phi={phi:.1f}°',
+                marker=dict(
+                    size=3,
+                    color=intensities,
+                    colorscale='Viridis',
+                    opacity=0.6
+                ),
+                hovertemplate=(
+                    "X: %{x:.3f}<br>" +
+                    "Y: %{y:.3f}<br>" +
+                    "Z: %{z:.3f}<br>" +
+                    "Intensity: %{marker.color:.1f}<br>" +
+                    f"Phi: {phi:.1f}°<br>" +
+                    "<extra></extra>"
+                )
+            ))
+    
+    # Calculate overall ranges for all points
+    all_x = []
+    all_y = []
+    all_z = []
+    for trace in fig.data:
+        all_x.extend(trace.x)
+        all_y.extend(trace.y)
+        all_z.extend(trace.z)
+    
+    if all_x:  # Only update ranges if we have points
+        x_range = [min(all_x), max(all_x)]
+        y_range = [min(all_y), max(all_y)]
+        z_range = [min(all_z), max(all_z)]
+        
+        padding = 0.2
+        x_pad = (x_range[1] - x_range[0]) * padding
+        y_pad = (y_range[1] - y_range[0]) * padding
+        z_pad = (z_range[1] - z_range[0]) * padding
+        
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(range=[x_range[0]-x_pad, x_range[1]+x_pad]),
+                yaxis=dict(range=[y_range[0]-y_pad, y_range[1]+y_pad]),
+                zaxis=dict(range=[z_range[0]-z_pad, z_range[1]+z_pad])
+            )
+        )
+    
+    fig.update_layout(
+        title="3D Diffraction Patterns",
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=2, y=2, z=2)
+            ),
+            bgcolor='white'
+        ),
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.0,
+            itemsizing='constant',
+            bgcolor="rgba(255, 255, 255, 0.8)"
+        ),
+        paper_bgcolor='white',
+        width=1000,
+        height=800,
+        margin=dict(r=150)
+    )
+    
+    return fig
