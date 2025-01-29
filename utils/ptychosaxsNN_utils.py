@@ -21,6 +21,10 @@ import plotly.graph_objects as go
 from tqdm import tqdm
 from skimage.transform import downscale_local_mean
 from plotly.subplots import make_subplots
+import time
+import pdb
+from ipywidgets import interact, FloatSlider, Button, VBox, Output
+import ipywidgets as widgets
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -1604,3 +1608,246 @@ def visualize_tomo(tomo_data, intensity_threshold=0.1):
     )
     
     return fig
+
+
+
+
+
+
+
+
+
+
+def get_roi_from_frame(frame_number, grid_size_col=11):
+    """
+    Convert frame number to grid position
+    
+    Args:
+        frame_number (int): Frame number in the scan
+        grid_size_col (int): Number of columns in the grid
+    
+    Returns:
+        tuple: (x, y) coordinates in the grid
+    """
+    # Convert frame number to grid position
+    row = frame_number // grid_size_col
+    col = frame_number % grid_size_col
+    return (col, row)
+
+def get_frames_from_roi(analyzers, df, roi_pos, roi_radius=512, grid_size_col=11):
+    """
+    Get frame indices for diffraction patterns closest to an ROI across all projections
+    
+    Args:
+        analyzers (list): List of DiffractionAnalyzer objects
+        df (pd.DataFrame): DataFrame containing shift information
+        roi_pos (tuple): (x, y) position in pixels
+        roi_radius (float): Radius around ROI center to consider (in pixels)
+        grid_size_col (int): Number of columns in the grid
+    
+    Returns:
+        dict: Dictionary mapping scan numbers to lists of frame indices
+    """
+    roi_x, roi_y = roi_pos
+    print(f"Reference ROI position: ({roi_x:.1f}, {roi_y:.1f})")
+    
+    roi_frames = {}
+    
+    for analyzer in analyzers:
+        scan = analyzer.scan_number
+        
+        # Get shifts for this scan
+        y_shift = df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0]
+        x_shift = df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0]
+        
+        # Calculate grid positions for all frames in this scan
+        n_frames = len(analyzer.dps)
+        
+        frame_positions = []
+        for frame in range(n_frames):
+            # Convert frame number to pixel coordinates
+            row = (frame // grid_size_col) * 512
+            col = (frame % grid_size_col) * 512
+            
+            # Apply shifts
+            shifted_x = col + x_shift
+            shifted_y = row + y_shift
+            
+            frame_positions.append((shifted_x, shifted_y))
+        
+        # Find frames within ROI
+        distances = [np.sqrt((pos[0] - roi_x)**2 + (pos[1] - roi_y)**2) 
+                    for pos in frame_positions]
+        
+        # Get frames within radius
+        close_frames = [i for i, d in enumerate(distances) if d <= roi_radius]
+        
+        if close_frames:
+            roi_frames[scan] = close_frames
+            print(f"Scan {scan}: Found frames {close_frames} within radius {roi_radius} pixels")
+    
+    return roi_frames
+
+
+
+def select_roi_from_shifted_grid(analyzer, df, grid_size_row=12, grid_size_col=11):
+    """
+    Display shifted grid and let user select ROI using sliders
+    
+    Args:
+        analyzer: DiffractionAnalyzer object for reference scan
+        df: DataFrame with shift information
+        grid_size_row, grid_size_col: Grid dimensions
+    
+    Returns:
+        widgets.Output: Output widget that will contain the selected position
+    """
+    # Get shifts for this scan
+    scan = analyzer.scan_number
+    y_shift = df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0]
+    x_shift = df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0]
+    
+    # Calculate all frame positions and intensities
+    positions = []
+    intensities = []
+    frame_numbers = []
+    
+    for frame in range(len(analyzer.dps)):
+
+        row = int((frame // grid_size_col)*512)
+        col = int((frame % grid_size_col)*512)
+        
+        # Apply shifts
+        shifted_x = col + x_shift
+        shifted_y = row + y_shift
+        
+        positions.append((shifted_x, shifted_y))
+        intensities.append(np.mean(analyzer.dps[frame]))
+        frame_numbers.append(frame)
+    
+    positions = np.array(positions)
+    x_min, x_max = positions[:, 0].min(), positions[:, 0].max()
+    y_min, y_max = positions[:, 1].min(), positions[:, 1].max()
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+    scatter = ax.scatter(positions[:, 0], positions[:, 1], 
+                        c=intensities, cmap='viridis',
+                        s=100, alpha=0.6)
+    
+    # Add frame number annotations
+    for i, (x, y) in enumerate(positions):
+        ax.annotate(str(frame_numbers[i]), (x, y), 
+                   xytext=(5, 5), textcoords='offset points',
+                   fontsize=8)
+    
+    plt.colorbar(scatter, label='Mean Intensity')
+    ax.set_title(f'Shifted Grid for Scan {scan}')
+    ax.set_xlabel('X position (shifted)')
+    ax.set_ylabel('Y position (shifted)')
+    plt.show()
+    
+    # Create output widget to store the result
+    output = widgets.Output()
+    
+    # Create sliders
+    x_slider = FloatSlider(
+        value=(x_max + x_min)/2,
+        min=x_min,
+        max=x_max,
+        step=0.1,
+        description='X position:',
+        continuous_update=False
+    )
+    
+    y_slider = FloatSlider(
+        value=(y_max + y_min)/2,
+        min=y_min,
+        max=y_max,
+        step=0.1,
+        description='Y position:',
+        continuous_update=False
+    )
+    
+    button = Button(description="Confirm Selection")
+    
+    def on_button_clicked(b):
+        with output:
+            print(f"Selected position: ({x_slider.value:.2f}, {y_slider.value:.2f})")
+            output.roi_pos = (x_slider.value, y_slider.value)
+    
+    button.on_click(on_button_clicked)
+    
+    # Display widgets
+    display(VBox([x_slider, y_slider, button]))
+    display(output)
+    
+    return output
+
+
+def plot_roi_frames_interactive(analyzers, roi_frames, df):
+    """
+    Create interactive plot to view ROI frames across different scans
+    
+    Args:
+        analyzers (list): List of DiffractionAnalyzer objects
+        roi_frames (dict): Dictionary mapping scan numbers to frame lists
+        df (DataFrame): DataFrame containing scan information
+    """
+    # Create mapping of analyzers by scan number
+    analyzer_dict = {a.scan_number: a for a in analyzers}
+    
+    # Get list of scans and corresponding angles
+    scans = list(roi_frames.keys())
+    angles = [df.loc[df['scanNo'] == scan, 'Angle'].values[0] for scan in scans]
+    
+    # Create widgets
+    scan_slider = widgets.IntSlider(
+        value=0,
+        min=0,
+        max=len(scans)-1,
+        step=1,
+        description='Scan Index:',
+        continuous_update=False
+    )
+    
+    scan_info = widgets.HTML(
+        value="Scan info will appear here"
+    )
+    
+    plot_output = widgets.Output()
+    
+    def update_plot(change):
+        with plot_output:
+            plot_output.clear_output(wait=True)
+            
+            scan_idx = scan_slider.value
+            scan = scans[scan_idx]
+            angle = angles[scan_idx]
+            frame = roi_frames[scan][0]
+            analyzer = analyzer_dict[scan]
+            
+            # Update info
+            scan_info.value = f"""
+            <b>Scan</b>: {scan}<br>
+            <b>Angle</b>: {angle:.2f}°<br>
+            <b>Frame</b>: {frame}
+            """
+            
+            # Create new figure for each update
+            plt.figure(figsize=(8, 6))
+            plt.imshow(analyzer.dps[frame], norm=colors.LogNorm())
+            plt.colorbar(label='Intensity')
+            plt.title(f'Scan {scan}, Frame {frame}, Angle {angle:.1f}°')
+            plt.tight_layout()
+            plt.show()
+    
+    # Connect the callback to the slider
+    scan_slider.observe(update_plot, names='value')
+    
+    # Create layout and display
+    display(widgets.VBox([scan_slider, scan_info]))
+    display(plot_output)
+    
+    # Initial plot
+    update_plot(None)

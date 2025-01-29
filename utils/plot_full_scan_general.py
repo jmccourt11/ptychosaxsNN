@@ -11,7 +11,6 @@ import os
 import importlib
 import pandas as pd
 
-
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
@@ -397,57 +396,6 @@ class DiffractionAnalyzer:
 
 
 
-# Example usage
-#scans=np.arange(1670,1685,1) 
-#scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
-scans=[1635]
-#scans=np.arange(1053,1167,1) #Box/12IDC_3D/Sample4/tomo4
-#%%
-for scan in scans:
-    try:
-        analyzer = DiffractionAnalyzer(
-            base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
-            scan_number=scan,
-            dp_size=512,
-            center_offset_y=0,  # Vertical offset
-            center_offset_x=0,    # Horizontal offset
-            center_cut=64,#75,
-            n_peaks=10,
-            peak_threshold=0.25
-        )
-
-        # Load and process data
-        analyzer.load_and_crop_data()
-
-
-        # Load model and perform deconvolution (which now includes peak finding)
-        #model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_diff_sim15_zhihua_JM02_3D.pth')
-        model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
-        analyzer.load_model(model_path)
-        analyzer.perform_deconvolution()
-
-        # Analyze the automatically detected peaks
-        analyzer.analyze_peaks(radius=64)
-        #%%
-        # Generate plots
-        analyzer.plot_deconvolution_results()
-        #analyzer.plot_full_scan(grid_size_row=15, grid_size_col=20) 
-        analyzer.plot_full_scan(grid_size_row=12, grid_size_col=11) 
-
-        # Save peak analysis
-        analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
-    except:
-        print(f"Error for scan {scan}")
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -463,24 +411,13 @@ df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_proj
 # Convert scanNo to integer if needed
 df['scanNo'] = df['scanNo'].astype(int)
 
+#%%
 # Get angle for a specific scan number
 def get_angle_for_scan(df, scan_number):
     return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
+#%%
 
 
-# Load model once before the loop
-model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
-analyzer = DiffractionAnalyzer(
-    base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
-    scan_number=0,  # Placeholder scan number
-    dp_size=512,
-    center_offset_y=0,
-    center_offset_x=0,
-    center_cut=64,
-    n_peaks=10,
-    peak_threshold=0.25
-)
-analyzer.load_model(model_path)
 
 scans = df['scanNo'].astype(int)
 # peaks_list = []
@@ -488,9 +425,24 @@ phi_angles = []
 dps_list = []
 # dps_conv_list = []
 analzyer_list=[]
+rois=[]
 
-for scan in tqdm(scans[::10],desc="Processing scans"):
+#frame_number=40
+for scan in tqdm(scans[::4],desc="Processing scans"):
     try:
+                # Load model once before the loop
+        model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
+        analyzer = DiffractionAnalyzer(
+            base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
+            scan_number=0,  # Placeholder scan number
+            dp_size=512,
+            center_offset_y=0,
+            center_offset_x=0,
+            center_cut=64,
+            n_peaks=10,
+            peak_threshold=0.25
+        )
+        analyzer.load_model(model_path)
         angle = get_angle_for_scan(df, scan)
         print(angle)
         # Update scan number for current iteration
@@ -509,6 +461,36 @@ for scan in tqdm(scans[::10],desc="Processing scans"):
         analzyer_list.append(analyzer)
         dps_list.append(analyzer.deconvolved)
         phi_angles.append(angle)    
+        
+        # Generate plots
+        #analyzer.plot_deconvolution_results()
+        #analyzer.plot_full_scan(grid_size_row=15, grid_size_col=20) 
+        #analyzer.plot_full_scan(grid_size_row=12, grid_size_col=11) 
+
+        # plt.figure()
+        # plt.imshow(analyzer.dps[frame_number],norm=colors.LogNorm())
+        # plt.show()
+        
+        # Pick a specific frame
+        # roi=analyzer.dps[frame_number]
+        # rois.append(roi)
+        
+
+        # fig = ptNN_U.visualize_shifted_grid(
+        # analyzer,
+        # y_shift=df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0],
+        # x_shift=df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0],
+        # grid_size_row=12,
+        # grid_size_col=11,
+        # log_scale=True
+        # )
+        # plt.show()
+        
+        
+        
+        # Save peak analysis
+        #analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
+    
     except:
         print(f"Error for scan {scan}")
 
@@ -518,6 +500,61 @@ for scan in tqdm(scans[::10],desc="Processing scans"):
 # fig.show()
 # # %%
 # ptNN_U.group_3D_peaks(peaks_list, phi_angles, tolerance=64).keys()
+
+
+
+
+
+
+
+
+#%%
+# Select ROI using sliders
+reference_analyzer = analzyer_list[0]
+output_widget = ptNN_U.select_roi_from_shifted_grid(
+    reference_analyzer, 
+    df,
+    grid_size_row=12,
+    grid_size_col=11
+)
+
+
+#%%
+# In the next cell, after you've made your selection:
+roi_pos = output_widget.roi_pos
+#%%
+# Get corresponding frames across all projections
+roi_frames = ptNN_U.get_frames_from_roi(
+    analzyer_list,
+    df,
+    roi_pos,
+    roi_radius=512//2,
+    grid_size_col=11
+)
+#%%
+ptNN_U.plot_roi_frames_interactive(analzyer_list, roi_frames, df)
+#%%
+
+
+
+
+
+# i=6
+# fig = ptNN_U.visualize_shifted_grid(
+# analzyer_list[i],
+# y_shift=df.loc[df['scanNo'] == analzyer_list[i].scan_number, 'y_shift'].iloc[0],
+# x_shift=df.loc[df['scanNo'] == analzyer_list[i].scan_number, 'x_shift'].iloc[0],
+# grid_size_row=12,
+# grid_size_col=11,
+# log_scale=True
+# )
+# plt.show()
+
+
+
+
+
+
 
 
 #%%
@@ -539,11 +576,6 @@ fig_q.show()
 
 
 
-
-
-
-
-
 #%%
 fig_q, tomo_data = ptNN_U.visualize_3D_diffraction_patterns2(
     dps_list,
@@ -556,15 +588,179 @@ fig_q, tomo_data = ptNN_U.visualize_3D_diffraction_patterns2(
     detector_distance=5570,
     pixel_size=0.075,
     return_data=True,
-    grid_size=50  # Adjust resolution as needed
+    grid_size=256  # Adjust resolution as needed
 )
 fig_q.show()
 
 
 #%%
-fig_tomo = ptNN_U.visualize_tomo(tomo_data, intensity_threshold=0.2)  # Try a lower threshold
+fig_tomo = ptNN_U.visualize_tomo(tomo_data, intensity_threshold=0.)  # Try a lower threshold
 fig_tomo.show()
 #%%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+# First pass: collect all peak data
+global_peak_data = {}
+scan_analyzers = {}
+
+for scan in scans:
+    try:
+        analyzer = DiffractionAnalyzer(
+            base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
+            scan_number=scan,
+            dp_size=512,
+            center_offset_y=0,
+            center_offset_x=0,
+            center_cut=64,
+            n_peaks=10,
+            peak_threshold=0.25
+        )
+
+        # Load and process data
+        analyzer.load_and_crop_data()
+        
+        # Load model and perform deconvolution
+        model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
+        analyzer.load_model(model_path)
+        analyzer.perform_deconvolution()
+        
+        # Store analyzer for later use
+        scan_analyzers[scan] = analyzer
+        
+        # Calculate intensities for each peak position
+        for peak_idx, peak in enumerate(analyzer.peaks):
+            x, y = peak
+            x = x*2  # Scale for 512x512
+            y = y*2  # Scale for 512x512
+            
+            # Initialize peak position in global data if not exists
+            peak_key = f"{x},{y}"
+            if peak_key not in global_peak_data:
+                global_peak_data[peak_key] = {
+                    'total_intensity': 0,
+                    'coordinates': (x, y)
+                }
+            
+            # Sum intensities for this peak across all frames
+            for dp in analyzer.dps:
+                intensity = ptNN_U.circular_neighborhood_intensity(
+                    dp, x, y, radius=64, plot=False
+                )
+                global_peak_data[peak_key]['total_intensity'] += intensity
+                
+    except Exception as e:
+        print(f"Error for scan {scan}: {str(e)}")
+
+#%%
+# Second pass: analyze with global normalization
+for scan in scans:
+    try:
+        analyzer = scan_analyzers[scan]
+        
+        # Modify analyze_peaks to use global normalization
+        def analyze_peaks_global(analyzer, global_peak_data, radius=64):
+            """Modified version of analyze_peaks using global normalization"""
+            if analyzer.peaks is None:
+                raise ValueError("Peaks must be detected before analysis")
+            
+            analyzer.radius = radius
+            
+            # Calculate reference-subtracted sum
+            dps_sum_sub = []
+            for dp in analyzer.dps:
+                test = np.subtract(dp, analyzer.dps[0], dtype=float)
+                dps_sum_sub.append(test)
+            dps_sum_sub = np.sum(dps_sum_sub, axis=0)
+            
+            # Calculate intensities and orientations with global normalization
+            frame_intensities = []
+            frame_orientations = []
+            
+            for peak in analyzer.peaks:
+                x, y = peak
+                x = x*2
+                y = y*2
+                
+                # Get global sum for this peak position
+                peak_key = f"{x},{y}"
+                global_sum = global_peak_data[peak_key]['total_intensity']
+                
+                # Calculate intensity using circular neighborhood
+                intensity = ptNN_U.circular_neighborhood_intensity(
+                    dps_sum_sub, x, y, radius=radius, plot=False
+                )
+                # Normalize by global sum
+                normalized_intensity = intensity / global_sum if global_sum > 0 else 0
+                frame_intensities.append(normalized_intensity)
+                
+                # Calculate orientation (unchanged)
+                region = dps_sum_sub[max(0, x-radius):min(dps_sum_sub.shape[0], x+radius+1),
+                                   max(0, y-radius):min(dps_sum_sub.shape[1], y+radius+1)]
+                y_coords, x_coords = np.mgrid[0:region.shape[0], 0:region.shape[1]]
+                total_intensity = np.sum(region)
+                
+                if total_intensity > 0:
+                    center_x = np.sum(x_coords * region) / total_intensity
+                    center_y = np.sum(y_coords * region) / total_intensity
+                    angle = np.arctan2(center_y - region.shape[0]/2,
+                                     center_x - region.shape[1]/2)
+                    angle_deg = (np.degrees(angle) + 360) % 360
+                else:
+                    angle_deg = 0
+                
+                frame_orientations.append(angle_deg)
+            
+            analyzer.intensities_sum = frame_intensities
+            analyzer.orientations_sum = frame_orientations
+            
+            # Print results
+            for idx, peak in enumerate(analyzer.peaks):
+                x, y = peak
+                print(f"Peak at ({x*2}, {y*2}) has intensity: {frame_intensities[idx]}, "
+                      f"orientation: {frame_orientations[idx]:.1f}°")
+            
+            return analyzer
+        
+        # Analyze peaks with global normalization
+        analyzer = analyze_peaks_global(analyzer, global_peak_data, radius=64)
+        
+        # Generate plots
+        analyzer.plot_deconvolution_results()
+        analyzer.plot_full_scan(grid_size_row=12, grid_size_col=11)
+        
+        # Save peak analysis
+        analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
+        
+    except Exception as e:
+        print(f"Error for scan {scan}: {str(e)}")
+
+
+
+#%%
+
+
+
 
 
 
@@ -580,80 +776,3 @@ fig_tomo.show()
 #         dps_dict[scan] = analyzer.dps
 #     except:
 #         print(f"Error for scan {scan}")
-
-
-
-
-
-
-
-
-#%%
-#scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
-# Read the file, skipping the first row (which starts with #) and using the second row as headers
-df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_projs_1537_1789_shifts.txt', 
-                 comment='#',  # Skip lines starting with #
-                 names=['Angle', 'y_shift', 'x_shift', 'scanNo'])  # Specify column names
-
-# Convert scanNo to integer if needed
-df['scanNo'] = df['scanNo'].astype(int)
-
-# Get angle for a specific scan number
-def get_angle_for_scan(df, scan_number):
-    return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
-
-# Load model once before the loop
-model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
-analyzer = DiffractionAnalyzer(
-    base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
-    scan_number=0,  # Placeholder scan number
-    dp_size=512,
-    center_offset_y=0,
-    center_offset_x=0,
-    center_cut=64,
-    n_peaks=10,
-    peak_threshold=0.25
-)
-analyzer.load_model(model_path)
-
-scans = df['scanNo'].astype(int)[:5]
-peaks_list = []
-phi_angles = []
-dps_list = []
-dps_conv_list = []
-
-for scan in scans:
-    try:
-        angle = get_angle_for_scan(df, scan)
-        print(angle)
-        
-        # Update scan number for current iteration
-        analyzer.scan_number = scan
-        
-        # Load and process data
-        analyzer.load_and_crop_data()
-        
-        # Perform deconvolution using already loaded model
-        analyzer.perform_deconvolution()
-        
-        # Analyze the automatically detected peaks
-        analyzer.analyze_peaks(radius=64)
-        
-        # Append to lists
-        peaks_list.append(analyzer.peaks)
-        dps_list.append(analyzer.deconvolved)
-        dps_conv_list.append(analyzer.dps_sum)
-        phi_angles.append(angle)    
-        
-        fig = ptNN_U.visualize_shifted_grid(
-        analyzer,
-        y_shift=df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0],
-        x_shift=df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0],
-        grid_size_row=12,
-        grid_size_col=11,
-        log_scale=True
-        )
-        plt.show()
-    except:
-        print(f"Error for scan {scan}")
-# %%
