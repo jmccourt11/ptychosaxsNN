@@ -11,6 +11,7 @@ import os
 import importlib
 import pandas as pd
 
+
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
@@ -391,6 +392,11 @@ class DiffractionAnalyzer:
         return self
 
 
+
+
+
+
+
 # Example usage
 #scans=np.arange(1670,1685,1) 
 #scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
@@ -434,6 +440,154 @@ for scan in scans:
         print(f"Error for scan {scan}")
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+#scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
+# Read the file, skipping the first row (which starts with #) and using the second row as headers
+df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_projs_1537_1789_shifts.txt', 
+                 comment='#',  # Skip lines starting with #
+                 names=['Angle', 'y_shift', 'x_shift', 'scanNo'])  # Specify column names
+
+# Convert scanNo to integer if needed
+df['scanNo'] = df['scanNo'].astype(int)
+
+# Get angle for a specific scan number
+def get_angle_for_scan(df, scan_number):
+    return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
+
+
+# Load model once before the loop
+model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
+analyzer = DiffractionAnalyzer(
+    base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
+    scan_number=0,  # Placeholder scan number
+    dp_size=512,
+    center_offset_y=0,
+    center_offset_x=0,
+    center_cut=64,
+    n_peaks=10,
+    peak_threshold=0.25
+)
+analyzer.load_model(model_path)
+
+scans = df['scanNo'].astype(int)
+# peaks_list = []
+phi_angles = []
+dps_list = []
+# dps_conv_list = []
+analzyer_list=[]
+
+for scan in tqdm(scans[::10],desc="Processing scans"):
+    try:
+        angle = get_angle_for_scan(df, scan)
+        print(angle)
+        # Update scan number for current iteration
+        analyzer.scan_number = scan
+        
+        # Load and process data
+        analyzer.load_and_crop_data()
+        
+        # Perform deconvolution using already loaded model
+        analyzer.perform_deconvolution()
+        
+        # Analyze the automatically detected peaks
+        analyzer.analyze_peaks(radius=64)
+        
+        # Append to lists
+        analzyer_list.append(analyzer)
+        dps_list.append(analyzer.deconvolved)
+        phi_angles.append(angle)    
+    except:
+        print(f"Error for scan {scan}")
+
+# ptNN_U.visualize_3D_peaks(peaks_list, phi_angles)
+# # Visualize grouped peaks
+# fig = ptNN_U.visualize_grouped_peaks(peaks_list, phi_angles, tolerance=48)
+# fig.show()
+# # %%
+# ptNN_U.group_3D_peaks(peaks_list, phi_angles, tolerance=64).keys()
+
+
+#%%
+# Plot in q-space with custom experimental parameters
+fig_q = ptNN_U.visualize_3D_diffraction_patterns(
+    dps_list,
+    phi_angles,
+    #intensity_threshold=0.15,
+    intensity_threshold=0.35,
+    downsample_factor=1,
+    center_cutoff=48,
+    convert_to_q=True,
+    wavelength=1.24,  # Å
+    detector_distance=5570,  # mm
+    pixel_size=0.075  # mm
+)
+fig_q.show()
+
+
+
+
+
+
+
+
+
+#%%
+fig_q, tomo_data = ptNN_U.visualize_3D_diffraction_patterns2(
+    dps_list,
+    phi_angles,
+    intensity_threshold=0.35,
+    downsample_factor=1,
+    center_cutoff=48,
+    convert_to_q=False,
+    wavelength=1.24,
+    detector_distance=5570,
+    pixel_size=0.075,
+    return_data=True,
+    grid_size=50  # Adjust resolution as needed
+)
+fig_q.show()
+
+
+#%%
+fig_tomo = ptNN_U.visualize_tomo(tomo_data, intensity_threshold=0.2)  # Try a lower threshold
+fig_tomo.show()
+#%%
+
+
+
+# #%%
+# # Create dictionary to store diffraction patterns for each scan
+# dps_dict = {}
+
+# # Collect diffraction patterns for each scan
+# for scan in scans:
+#     try:
+#         analyzer.scan_number = scan
+#         analyzer.load_and_crop_data()
+#         dps_dict[scan] = analyzer.dps
+#     except:
+#         print(f"Error for scan {scan}")
+
+
+
+
+
+
+
+
 #%%
 #scans=np.arange(1537,1789,1) #Box/12IDC_3D/Sample6
 # Read the file, skipping the first row (which starts with #) and using the second row as headers
@@ -462,10 +616,11 @@ analyzer = DiffractionAnalyzer(
 )
 analyzer.load_model(model_path)
 
-scans = df['scanNo'].astype(int)
+scans = df['scanNo'].astype(int)[:5]
 peaks_list = []
 phi_angles = []
 dps_list = []
+dps_conv_list = []
 
 for scan in scans:
     try:
@@ -487,30 +642,18 @@ for scan in scans:
         # Append to lists
         peaks_list.append(analyzer.peaks)
         dps_list.append(analyzer.deconvolved)
+        dps_conv_list.append(analyzer.dps_sum)
         phi_angles.append(angle)    
+        
+        fig = ptNN_U.visualize_shifted_grid(
+        analyzer,
+        y_shift=df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0],
+        x_shift=df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0],
+        grid_size_row=12,
+        grid_size_col=11,
+        log_scale=True
+        )
+        plt.show()
     except:
         print(f"Error for scan {scan}")
-#%%
-ptNN_U.visualize_3D_peaks(peaks_list, phi_angles)
-# Visualize grouped peaks
-fig = ptNN_U.visualize_grouped_peaks(peaks_list, phi_angles, tolerance=48)
-fig.show()
-# %%
-ptNN_U.group_3D_peaks(peaks_list, phi_angles, tolerance=64).keys()
-
-
-
-
-
-
-# %%
-# Visualize 3D diffraction patterns (256x256)
-fig = ptNN_U.visualize_3D_diffraction_patterns(
-    dps_list,
-    phi_angles,
-    intensity_threshold=0.35,
-    downsample_factor=4,
-    center_cutoff=48  # Exclude points within 20 pixels of center
-)
-fig.show()
 # %%

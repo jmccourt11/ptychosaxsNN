@@ -17,6 +17,10 @@ import re
 from sklearn.cluster import DBSCAN
 import plotly.graph_objects as go
 import webbrowser
+import plotly.graph_objects as go
+from tqdm import tqdm
+from skimage.transform import downscale_local_mean
+from plotly.subplots import make_subplots
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -769,7 +773,6 @@ def visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.1):
         phi_angles (list): List of rotation angles in degrees
         tolerance (float): Distance tolerance for grouping peaks in 3D space
     """
-    import plotly.graph_objects as go
     
     # First, group the peaks using DBSCAN
     groups = group_3D_peaks(peaks_list, phi_angles, tolerance)
@@ -862,35 +865,66 @@ def visualize_grouped_peaks(peaks_list, phi_angles, tolerance=0.1):
     
     return fig
 
-def convert_dp_to_3D(dp, phi_angle, intensity_threshold=0, downsample_factor=4, center_cutoff=0):
+def convert_pixels_to_q(x, y, wavelength=1.24, detector_distance=5570, pixel_size=0.075):
     """
-    Convert a 2D diffraction pattern to 3D coordinates with downsampling
+    Convert detector pixel coordinates to q-vectors
     
     Args:
-        dp (np.ndarray): 2D diffraction pattern (256x256)
+        x (array): X coordinates in pixels (centered at 0)
+        y (array): Y coordinates in pixels (centered at 0)
+        wavelength (float): X-ray wavelength in Angstroms
+        detector_distance (float): Sample to detector distance in mm
+        pixel_size (float): Detector pixel size in mm
+        
+    Returns:
+        tuple: (qx, qy, qz) coordinates in inverse Angstroms
+    """
+    # Convert pixel positions to real space coordinates (mm)
+    x_mm = x * pixel_size
+    y_mm = y * pixel_size
+    
+    # Calculate scattering angles
+    r = np.sqrt(x_mm**2 + y_mm**2)
+    theta = 0.5 * np.arctan2(r, detector_distance)
+    
+    # Calculate q magnitude
+    q_mag = (4 * np.pi * np.sin(theta)) / wavelength
+    
+    # Calculate direction cosines
+    cos_phi = x_mm / r
+    cos_phi[r == 0] = 0  # Handle center point
+    sin_phi = y_mm / r
+    sin_phi[r == 0] = 0  # Handle center point
+    
+    # Calculate q components
+    qx = q_mag * cos_phi
+    qy = q_mag * sin_phi
+    qz = q_mag * np.sin(theta)
+    
+    return qx, qy, qz
+
+def convert_dp_to_3D(dp, phi_angle, intensity_threshold=0, center_cutoff=0, 
+                    convert_to_q=False, wavelength=1.24, detector_distance=5570, pixel_size=0.075):
+    """
+    Convert a 2D diffraction pattern to 3D coordinates
+    
+    Args:
+        dp (np.ndarray): 2D diffraction pattern of any size
         phi_angle (float): Rotation angle in degrees
         intensity_threshold (float): Minimum intensity to consider
-        downsample_factor (int): Factor by which to downsample the pattern
         center_cutoff (float): Radius of central region to exclude (in pixels)
+        convert_to_q (bool): If True, convert to q-space coordinates
+        wavelength (float): X-ray wavelength in Angstroms
+        detector_distance (float): Sample to detector distance in mm
+        pixel_size (float): Detector pixel size in mm
     """
-    # Verify input shape
-    if dp.shape != (256, 256):
-        raise ValueError(f"Expected diffraction pattern of shape (256, 256), got {dp.shape}")
-    
-    # Downsample the pattern
-    dp_small = dp[::downsample_factor, ::downsample_factor]
-    
     # Get coordinates of points above threshold
-    y_coords, x_coords = np.where(dp_small > intensity_threshold)
-    intensities = dp_small[y_coords, x_coords]
-    
-    # Scale coordinates back to original size
-    x_coords = x_coords * downsample_factor
-    y_coords = y_coords * downsample_factor
+    y_coords, x_coords = np.where(dp > intensity_threshold)
+    intensities = dp[y_coords, x_coords]
     
     # Center coordinates around (0,0)
-    x_coords = x_coords - 128
-    y_coords = y_coords - 128
+    x_coords = x_coords - dp.shape[1]//2
+    y_coords = y_coords - dp.shape[0]//2
     
     # Apply center cutoff
     if center_cutoff > 0:
@@ -906,30 +940,58 @@ def convert_dp_to_3D(dp, phi_angle, intensity_threshold=0, downsample_factor=4, 
     # Convert each point to 3D
     positions = []
     for x, y in zip(x_coords, y_coords):
-        # Apply rotation around y-axis
-        phi_rad = np.radians(phi_angle)
-        x3d = x * np.cos(phi_rad)
-        y3d = y
-        z3d = -x * np.sin(phi_rad)  # Note the negative sign for correct rotation
-        positions.append([x3d, y3d, z3d])
+        if convert_to_q:
+            # Convert to q-space first
+            qx, qy, qz = convert_pixels_to_q(np.array([x]), np.array([y]), 
+                           wavelength, detector_distance, pixel_size)
+            # Apply rotation around qy-axis
+            phi_rad = np.radians(phi_angle)
+            qx_rot = qx[0] * np.cos(phi_rad) - qz[0] * np.sin(phi_rad)
+            qy_rot = qy[0]
+            qz_rot = qx[0] * np.sin(phi_rad) + qz[0] * np.cos(phi_rad)
+            positions.append([qx_rot, qy_rot, qz_rot])
+        else:
+            # Original pixel-space conversion
+            phi_rad = np.radians(phi_angle)
+            x3d = x * np.cos(phi_rad)
+            y3d = y
+            z3d = -x * np.sin(phi_rad)
+            positions.append([x3d, y3d, z3d])
     
     return np.array(positions), intensities
 
-def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, downsample_factor=4, center_cutoff=0):
+def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, downsample_factor=4, 
+                                    center_cutoff=0, convert_to_q=False, wavelength=1.24, 
+                                    detector_distance=5570, pixel_size=0.075):
     """
     Convert and visualize diffraction patterns in 3D space
     
     Args:
-        dps (list): List of 2D diffraction patterns (256x256)
+        dps (list): List of 2D diffraction patterns or deconvolved patterns
         phi_angles (list): List of rotation angles in degrees
         intensity_threshold (float): Minimum intensity to consider
         downsample_factor (int): Factor by which to downsample the patterns
         center_cutoff (float): Radius of central region to exclude (in pixels)
+        convert_to_q (bool): If True, plot in q-space (Å⁻¹) instead of pixel space
+        wavelength (float): X-ray wavelength in Angstroms
+        detector_distance (float): Sample to detector distance in mm
+        pixel_size (float): Detector pixel size in mm
     """
-    import plotly.graph_objects as go
-    from tqdm import tqdm
     
-    print(f"Converting diffraction patterns to 3D points (center cutoff: {center_cutoff} pixels)...")
+    # Check input patterns
+    if not isinstance(dps, list) or len(dps) == 0:
+        raise ValueError("Input dps must be a non-empty list")
+    
+    # Get shape of first pattern
+    pattern_shape = dps[0].shape
+    print(f"Input pattern shape: {pattern_shape}")
+    
+    print(f"Converting diffraction patterns to 3D points (center cutoff: {center_cutoff} pixels)")
+    if convert_to_q:
+        print(f"Converting to q-space with:")
+        print(f"  Wavelength: {wavelength} Å")
+        print(f"  Detector distance: {detector_distance} mm")
+        print(f"  Pixel size: {pixel_size} mm")
     
     # Create visualization
     fig = go.Figure()
@@ -939,7 +1001,15 @@ def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, 
     
     # Convert and plot each diffraction pattern
     for i, (dp, phi) in enumerate(tqdm(zip(dps, phi_angles), total=len(dps))):
-        positions, intensities = convert_dp_to_3D(dp, phi, intensity_threshold, downsample_factor, center_cutoff)
+        positions, intensities = convert_dp_to_3D(
+            dp, phi, 
+            intensity_threshold=intensity_threshold,
+            center_cutoff=center_cutoff,
+            convert_to_q=convert_to_q,
+            wavelength=wavelength,
+            detector_distance=detector_distance,
+            pixel_size=pixel_size
+        )
         
         if len(positions) > 0:  # Only plot if points were found
             fig.add_trace(go.Scatter3d(
@@ -955,9 +1025,9 @@ def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, 
                     opacity=0.6
                 ),
                 hovertemplate=(
-                    "X: %{x:.3f}<br>" +
-                    "Y: %{y:.3f}<br>" +
-                    "Z: %{z:.3f}<br>" +
+                    f"{('q' if convert_to_q else 'X')}: %{{x:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
+                    f"{('q' if convert_to_q else 'Y')}: %{{y:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
+                    f"{('q' if convert_to_q else 'Z')}: %{{z:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
                     "Intensity: %{marker.color:.1f}<br>" +
                     f"Phi: {phi:.1f}°<br>" +
                     "<extra></extra>"
@@ -991,12 +1061,19 @@ def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, 
             )
         )
     
+    # Update axis labels based on space
+    axis_labels = {
+        'x': 'qx (Å⁻¹)' if convert_to_q else 'X (pixels)',
+        'y': 'qy (Å⁻¹)' if convert_to_q else 'Y (pixels)',
+        'z': 'qz (Å⁻¹)' if convert_to_q else 'Z (pixels)'
+    }
+    
     fig.update_layout(
-        title="3D Diffraction Patterns",
+        title="3D Diffraction Patterns" + (" (Q-space)" if convert_to_q else ""),
         scene=dict(
-            xaxis_title="X",
-            yaxis_title="Y",
-            zaxis_title="Z",
+            xaxis_title=axis_labels['x'],
+            yaxis_title=axis_labels['y'],
+            zaxis_title=axis_labels['z'],
             aspectmode='cube',
             camera=dict(
                 eye=dict(x=2, y=2, z=2)
@@ -1009,13 +1086,521 @@ def visualize_3D_diffraction_patterns(dps, phi_angles, intensity_threshold=0.1, 
             y=1,
             xanchor="left",
             x=1.0,
-            itemsizing='constant',
-            bgcolor="rgba(255, 255, 255, 0.8)"
+            itemsizing='constant'
+        )
+    )
+    
+    return fig
+
+
+
+def visualize_3D_diffraction_patterns2(dps, phi_angles, intensity_threshold=0.1, downsample_factor=4, 
+                                    center_cutoff=0, convert_to_q=False, wavelength=1.24, 
+                                    detector_distance=5570, pixel_size=0.075, return_data=False,
+                                    grid_size=100):
+    """
+    Convert and visualize diffraction patterns in 3D space and optionally return gridded data
+    
+    Args:
+        dps (list): List of 2D diffraction patterns or deconvolved patterns
+        phi_angles (list): List of rotation angles in degrees
+        intensity_threshold (float): Minimum intensity to consider
+        downsample_factor (int): Factor by which to downsample the patterns
+        center_cutoff (float): Radius of central region to exclude (in pixels)
+        convert_to_q (bool): If True, plot in q-space (Å⁻¹) instead of pixel space
+        wavelength (float): X-ray wavelength in Angstroms
+        detector_distance (float): Sample to detector distance in mm
+        pixel_size (float): Detector pixel size in mm
+        return_data (bool): If True, return the gridded data
+        grid_size (int): Number of points along each dimension for gridded data
+    """
+    # Check input patterns
+    if not isinstance(dps, list) or len(dps) == 0:
+        raise ValueError("Input dps must be a non-empty list")
+    
+    # Create visualization
+    fig = go.Figure()
+    
+    # Use different colors for different angles
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(phi_angles)))
+    
+    # Convert and plot each diffraction pattern
+    for i, (dp, phi) in enumerate(tqdm(zip(dps, phi_angles), total=len(dps))):
+        positions, intensities = convert_dp_to_3D(
+            dp, phi, 
+            intensity_threshold=intensity_threshold,
+            center_cutoff=center_cutoff,
+            convert_to_q=convert_to_q,
+            wavelength=wavelength,
+            detector_distance=detector_distance,
+            pixel_size=pixel_size
+        )
+        
+        if len(positions) > 0:  # Only plot if points were found
+            fig.add_trace(go.Scatter3d(
+                x=positions[:, 0],
+                y=positions[:, 1],
+                z=positions[:, 2],
+                mode='markers',
+                name=f'Phi={phi:.1f}°',
+                marker=dict(
+                    size=3,
+                    color=intensities,
+                    colorscale='Viridis',
+                    opacity=0.6
+                ),
+                hovertemplate=(
+                    f"{('q' if convert_to_q else 'X')}: %{{x:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
+                    f"{('q' if convert_to_q else 'Y')}: %{{y:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
+                    f"{('q' if convert_to_q else 'Z')}: %{{z:.3f}}{('Å⁻¹' if convert_to_q else 'px')}<br>" +
+                    "Intensity: %{marker.color:.1f}<br>" +
+                    f"Phi: {phi:.1f}°<br>" +
+                    "<extra></extra>"
+                )
+            ))
+
+    # Calculate overall ranges for all points
+    all_x = []
+    all_y = []
+    all_z = []
+    for trace in fig.data:
+        all_x.extend(trace.x)
+        all_y.extend(trace.y)
+        all_z.extend(trace.z)
+    
+    if all_x:  # Only update ranges if we have points
+        x_range = [min(all_x), max(all_x)]
+        y_range = [min(all_y), max(all_y)]
+        z_range = [min(all_z), max(all_z)]
+        
+        padding = 0.2
+        x_pad = (x_range[1] - x_range[0]) * padding
+        y_pad = (y_range[1] - y_range[0]) * padding
+        z_pad = (z_range[1] - z_range[0]) * padding
+        
+        fig.update_layout(
+            scene=dict(
+                xaxis=dict(range=[x_range[0]-x_pad, x_range[1]+x_pad]),
+                yaxis=dict(range=[y_range[0]-y_pad, y_range[1]+y_pad]),
+                zaxis=dict(range=[z_range[0]-z_pad, z_range[1]+z_pad])
+            )
+        )
+
+    # Update axis labels based on space
+    axis_labels = {
+        'x': 'qx (Å⁻¹)' if convert_to_q else 'X (pixels)',
+        'y': 'qy (Å⁻¹)' if convert_to_q else 'Y (pixels)',
+        'z': 'qz (Å⁻¹)' if convert_to_q else 'Z (pixels)'
+    }
+    
+    fig.update_layout(
+        title="3D Diffraction Patterns" + (" (Q-space)" if convert_to_q else ""),
+        scene=dict(
+            xaxis_title=axis_labels['x'],
+            yaxis_title=axis_labels['y'],
+            zaxis_title=axis_labels['z'],
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=2, y=2, z=2)
+            ),
+            bgcolor='white'
         ),
-        paper_bgcolor='white',
-        width=1000,
-        height=800,
-        margin=dict(r=150)
+        showlegend=True,
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.0,
+            itemsizing='constant'
+        )
+    )
+
+    if return_data:
+        # Collect all positions and intensities
+        all_positions = []
+        all_intensities = []
+        for dp, phi in zip(dps, phi_angles):
+            positions, intensities = convert_dp_to_3D(
+                dp, phi, 
+                intensity_threshold=intensity_threshold,
+                center_cutoff=center_cutoff,
+                convert_to_q=convert_to_q,
+                wavelength=wavelength,
+                detector_distance=detector_distance,
+                pixel_size=pixel_size
+            )
+            if len(positions) > 0:
+                all_positions.append(positions)
+                all_intensities.append(intensities)
+        
+        positions = np.concatenate(all_positions)
+        intensities = np.concatenate(all_intensities)
+        
+        # Create regular grid
+        x_min, x_max = positions[:, 0].min(), positions[:, 0].max()
+        y_min, y_max = positions[:, 1].min(), positions[:, 1].max()
+        z_min, z_max = positions[:, 2].min(), positions[:, 2].max()
+        
+        # Add small padding
+        padding = 0.05
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        z_range = z_max - z_min
+        x_min -= x_range * padding
+        x_max += x_range * padding
+        y_min -= y_range * padding
+        y_max += y_range * padding
+        z_min -= z_range * padding
+        z_max += z_range * padding
+        
+        # Create regular grid
+        x = np.linspace(x_min, x_max, grid_size)
+        y = np.linspace(y_min, y_max, grid_size)
+        z = np.linspace(z_min, z_max, grid_size)
+        
+        # Initialize volume
+        volume = np.zeros((grid_size, grid_size, grid_size))
+        
+        # Convert positions to grid indices
+        x_idx = np.clip(((positions[:, 0] - x_min) / (x_max - x_min) * (grid_size - 1)).astype(int), 0, grid_size-1)
+        y_idx = np.clip(((positions[:, 1] - y_min) / (y_max - y_min) * (grid_size - 1)).astype(int), 0, grid_size-1)
+        z_idx = np.clip(((positions[:, 2] - z_min) / (z_max - z_min) * (grid_size - 1)).astype(int), 0, grid_size-1)
+        
+        # Accumulate intensities in volume
+        np.add.at(volume, (x_idx, y_idx, z_idx), intensities)
+        
+        # Optional: Apply Gaussian smoothing
+        from scipy.ndimage import gaussian_filter
+        volume = gaussian_filter(volume, sigma=1.0)
+        
+        tomo_data = {
+            'volume': volume,
+            'coords': {
+                'x': x,
+                'y': y,
+                'z': z
+            },
+            'extent': {
+                'x': [x_min, x_max],
+                'y': [y_min, y_max],
+                'z': [z_min, z_max]
+            },
+            'units': 'Å⁻¹' if convert_to_q else 'pixels'
+        }
+        return fig, tomo_data
+    
+    return fig
+
+
+
+
+def create_grid_image(dps, grid_size_row, grid_size_col):
+    """
+    Create a grid image from diffraction patterns
+    
+    Args:
+        dps (list): List of diffraction patterns
+        grid_size_row (int): Number of rows in grid
+        grid_size_col (int): Number of columns in grid
+        
+    Returns:
+        np.ndarray: Grid image of diffraction patterns
+    """
+    image_size = dps[0].shape
+    grid_image = np.zeros((grid_size_row * image_size[0], 
+                          grid_size_col * image_size[1]))
+    
+    # Create grid image
+    for j in range(grid_size_row):
+        for i in range(grid_size_col):
+            image_idx = j * grid_size_col + i
+            if image_idx < len(dps):
+                grid_image[
+                    j * image_size[0]:(j + 1) * image_size[0],
+                    i * image_size[1]:(i + 1) * image_size[1]
+                ] = dps[image_idx]
+    
+    return grid_image
+
+def apply_shift_to_grid(grid_image, y_shift, x_shift, grid_size_row, grid_size_col, dp_size=256):
+    """
+    Apply shifts to each diffraction pattern in the grid
+    
+    Args:
+        grid_image (np.ndarray): Original grid image
+        y_shift (float): Vertical shift in pixels
+        x_shift (float): Horizontal shift in pixels
+        grid_size_row (int): Number of rows in grid
+        grid_size_col (int): Number of columns in grid
+        dp_size (int): Size of each diffraction pattern
+        
+    Returns:
+        np.ndarray: Shifted grid image
+    """
+    # Calculate new size needed for shifted image
+    max_y_shift = abs(y_shift) * grid_size_row
+    max_x_shift = abs(x_shift) * grid_size_col
+    new_height = grid_image.shape[0] + int(2 * max_shift_y)
+    new_width = grid_image.shape[1] + int(2 * max_shift_x)
+    
+    # Create new image with padding
+    shifted_grid = np.zeros((new_height, new_width))
+    
+    # Calculate total number of patterns from grid image dimensions
+    total_patterns = (grid_image.shape[0] // dp_size) * (grid_image.shape[1] // dp_size)
+    
+    # Apply shifts to each diffraction pattern
+    for j in range(grid_size_row):
+        for i in range(grid_size_col):
+            pattern_idx = j * grid_size_col + i
+            if pattern_idx >= total_patterns:
+                continue
+                
+            # Calculate cumulative shift
+            cum_y_shift = int(y_shift * j)
+            cum_x_shift = int(x_shift * i)
+            
+            # Calculate source and target positions
+            src_y = j * dp_size
+            src_x = i * dp_size
+            tgt_y = src_y + cum_y_shift + int(max_shift_y)
+            tgt_x = src_x + cum_x_shift + int(max_shift_x)
+            
+            # Copy diffraction pattern to new position
+            shifted_grid[
+                tgt_y:tgt_y + dp_size,
+                tgt_x:tgt_x + dp_size
+            ] = grid_image[
+                src_y:src_y + dp_size,
+                src_x:src_x + dp_size
+            ]
+    
+    return shifted_grid
+
+
+def visualize_shifted_grid(analyzer, y_shift, x_shift, grid_size_row, grid_size_col, log_scale=True):
+    """
+    Create and display shifted grid images with weighted intensity peaks
+    """
+    # Calculate maximum shifts
+    max_y_shift = abs(y_shift * (grid_size_row - 1))
+    max_x_shift = abs(x_shift * (grid_size_col - 1))
+    
+    print(f"Shift per position: ({y_shift:.1f}, {x_shift:.1f}) pixels")
+    print(f"Maximum cumulative shifts: ({max_y_shift:.1f}, {max_x_shift:.1f}) pixels")
+    
+    # Create original grid
+    image_size = analyzer.dps[0].shape
+    original_grid = np.zeros((grid_size_row * image_size[0], 
+                            grid_size_col * image_size[1]))
+    
+    # Create shifted grid with expanded dimensions
+    shifted_grid = np.zeros((
+        grid_size_row * image_size[0] + int(max_y_shift),
+        grid_size_col * image_size[1] + int(max_x_shift)
+    ))
+    
+    # Calculate intensities for each frame
+    ss = []
+    for image in tqdm(analyzer.dps, desc="Calculating intensities"):
+        frame_intensities, _ = analyzer.calculate_frame_intensities_and_orientations(image, analyzer.dps[0])
+        s = np.array([frame_intensities[i]/analyzer.intensities_sum[i]/np.max(analyzer.intensities_sum) 
+                     for i in range(len(frame_intensities))])
+        ss.append(s)
+    
+    test_ss = np.array([(s-np.min(ss))/(np.max(ss)-np.min(ss)) for s in ss])
+    
+    # Get peak coordinates
+    peak_y, peak_x = zip(*analyzer.peaks)
+    
+    # Create figure
+    fig = plt.figure(figsize=(20, 10))
+    gs = plt.GridSpec(1, 2, width_ratios=[original_grid.shape[1], shifted_grid.shape[1]])
+    ax1 = plt.subplot(gs[0])
+    ax2 = plt.subplot(gs[1])
+    
+    # First create the original grid
+    for j in range(grid_size_row):
+        for i in range(grid_size_col):
+            image_idx = j * grid_size_col + i
+            if image_idx < len(analyzer.dps):
+                # Fill original grid
+                y_start = j * image_size[0]
+                x_start = i * image_size[1]
+                original_grid[
+                    y_start:y_start + image_size[0],
+                    x_start:x_start + image_size[1]
+                ] = analyzer.dps[image_idx]
+                
+                # Add peaks to original grid
+                ax1.scatter(
+                    np.array(peak_x)*2 + x_start,
+                    np.array(peak_y)*2 + y_start,
+                    color='red', s=50,
+                    alpha=[max(0, alpha) for alpha in test_ss[image_idx]]
+                )
+                
+                for px, py, alpha in zip(peak_x, peak_y, test_ss[image_idx]):
+                    circle = plt.Circle(
+                        (px*2 + x_start, py*2 + y_start),
+                        analyzer.radius,
+                        color='red',
+                        fill=False,
+                        alpha=max(0, alpha),
+                        linewidth=0.5
+                    )
+                    ax1.add_patch(circle)
+    
+    # Now shift the entire grid at once
+    y_shift_total = int(max_y_shift)
+    x_shift_total = int(max_x_shift)
+    
+    # Copy the entire original grid to the shifted position
+    shifted_grid[
+        y_shift_total:y_shift_total + original_grid.shape[0],
+        x_shift_total:x_shift_total + original_grid.shape[1]
+    ] = original_grid
+    
+    # Add peaks to shifted grid (shifted as a whole)
+    for j in range(grid_size_row):
+        for i in range(grid_size_col):
+            image_idx = j * grid_size_col + i
+            if image_idx < len(analyzer.dps):
+                x_start = i * image_size[1] + x_shift_total
+                y_start = j * image_size[0] + y_shift_total
+                
+                ax2.scatter(
+                    np.array(peak_x)*2 + x_start,
+                    np.array(peak_y)*2 + y_start,
+                    color='red', s=50,
+                    alpha=[max(0, alpha) for alpha in test_ss[image_idx]]
+                )
+                
+                for px, py, alpha in zip(peak_x, peak_y, test_ss[image_idx]):
+                    circle = plt.Circle(
+                        (px*2 + x_start, py*2 + y_start),
+                        analyzer.radius,
+                        color='red',
+                        fill=False,
+                        alpha=max(0, alpha),
+                        linewidth=0.5
+                    )
+                    ax2.add_patch(circle)
+    
+    # Plot grids with log scale
+    if log_scale:
+        im1 = ax1.imshow(original_grid, norm=colors.LogNorm(), cmap=analyzer.cmap)
+        im2 = ax2.imshow(shifted_grid, norm=colors.LogNorm(), cmap=analyzer.cmap)
+    else:
+        im1 = ax1.imshow(original_grid, cmap=analyzer.cmap)
+        im2 = ax2.imshow(shifted_grid, cmap=analyzer.cmap)
+    
+    # Add colorbars
+    plt.colorbar(im1, ax=ax1)
+    plt.colorbar(im2, ax=ax2)
+    
+    # Set titles
+    ax1.set_title('Original Grid')
+    ax2.set_title('Shifted Grid')
+    
+    plt.tight_layout()
+    return fig
+
+def visualize_tomo(tomo_data, intensity_threshold=0.1):
+    """
+    Visualize 3D tomographic data using interactive scatter plot
+    
+    Args:
+        tomo_data (dict): Dictionary containing volume data and coordinates
+        intensity_threshold (float): Minimum intensity to show (0-1 relative to max intensity)
+    
+    Returns:
+        go.Figure: Interactive 3D plotly figure
+    """
+    # Debug: Print input data structure
+    print("Tomo_data keys:", tomo_data.keys())
+    
+    volume = tomo_data['volume']
+    x = tomo_data['coords']['x']
+    y = tomo_data['coords']['y']
+    z = tomo_data['coords']['z']
+    units = tomo_data['units']
+    
+    # Debug: Print shapes and ranges
+    print("Volume shape:", volume.shape)
+    print("Coordinate ranges:")
+    print(f"x: {x.min():.3f} to {x.max():.3f}")
+    print(f"y: {y.min():.3f} to {y.max():.3f}")
+    print(f"z: {z.min():.3f} to {z.max():.3f}")
+    print(f"Volume range: {volume.min():.3f} to {volume.max():.3f}")
+    
+    # Create meshgrid of coordinates
+    X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+    
+    # Debug: Print meshgrid shapes
+    print("Meshgrid shapes:")
+    print(f"X: {X.shape}, Y: {Y.shape}, Z: {Z.shape}")
+    
+    # Apply threshold and get coordinates
+    max_intensity = volume.max()
+    threshold = max_intensity * intensity_threshold
+    mask = volume > threshold
+    
+    # Debug: Print threshold info
+    print(f"Max intensity: {max_intensity:.3f}")
+    print(f"Threshold: {threshold:.3f}")
+    print(f"Points above threshold: {np.sum(mask)}")
+    
+    # Convert masked arrays to 1D arrays for plotting
+    x_plot = X[mask]
+    y_plot = Y[mask]
+    z_plot = Z[mask]
+    intensities_plot = volume[mask]
+    
+    # Debug: Print final plotting arrays
+    print("Plotting arrays:")
+    print(f"Number of points to plot: {len(x_plot)}")
+    if len(x_plot) > 0:
+        print(f"x_plot range: {x_plot.min():.3f} to {x_plot.max():.3f}")
+        print(f"y_plot range: {y_plot.min():.3f} to {y_plot.max():.3f}")
+        print(f"z_plot range: {z_plot.min():.3f} to {z_plot.max():.3f}")
+        print(f"intensities range: {intensities_plot.min():.3f} to {intensities_plot.max():.3f}")
+    
+    # Create figure
+    fig = go.Figure(data=[go.Scatter3d(
+        x=x_plot,
+        y=y_plot,
+        z=z_plot,
+        mode='markers',
+        marker=dict(
+            size=3,
+            color=intensities_plot,
+            colorscale='Viridis',
+            opacity=0.6,
+            colorbar=dict(title='Intensity')
+        ),
+        hovertemplate=(
+            f"x: %{{x:.3f}} {units}<br>" +
+            f"y: %{{y:.3f}} {units}<br>" +
+            f"z: %{{z:.3f}} {units}<br>" +
+            "Intensity: %{marker.color:.1f}<br>" +
+            "<extra></extra>"
+        )
+    )])
+    
+    # Update layout
+    fig.update_layout(
+        title="3D Tomographic Reconstruction",
+        scene=dict(
+            xaxis_title=f"x ({units})",
+            yaxis_title=f"y ({units})",
+            zaxis_title=f"z ({units})",
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=2, y=2, z=2)
+            ),
+            bgcolor='white'
+        )
     )
     
     return fig
