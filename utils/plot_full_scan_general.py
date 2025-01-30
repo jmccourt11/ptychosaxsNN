@@ -116,7 +116,7 @@ class DiffractionAnalyzer:
         
         return self
 
-    def calculate_frame_intensities_and_orientations(self, image, ref_image):
+    def calculate_frame_intensities_and_orientations(self, image, ref_image,plot=False):
         """Helper function to calculate intensities and orientations for a single frame"""
         sub = np.subtract(image, ref_image, dtype=float)
         frame_intensities = []
@@ -129,7 +129,7 @@ class DiffractionAnalyzer:
             
             # Calculate intensity using circular neighborhood
             intensity = ptNN_U.circular_neighborhood_intensity(
-                sub, x, y, radius=self.radius, plot=False
+                sub, x, y, radius=self.radius, plot=plot
             )
             frame_intensities.append(intensity)
             
@@ -423,12 +423,12 @@ scans = df['scanNo'].astype(int)
 # peaks_list = []
 phi_angles = []
 dps_list = []
-# dps_conv_list = []
-analzyer_list=[]
+dps_conv_list = []
+analyzer_list=[]
 rois=[]
 
 #frame_number=40
-for scan in tqdm(scans[::4],desc="Processing scans"):
+for scan in tqdm(scans,desc="Processing scans"):
     try:
                 # Load model once before the loop
         model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/best_model_Unet_cindy.pth')
@@ -458,8 +458,9 @@ for scan in tqdm(scans[::4],desc="Processing scans"):
         analyzer.analyze_peaks(radius=64)
         
         # Append to lists
-        analzyer_list.append(analyzer)
+        analyzer_list.append(analyzer)
         dps_list.append(analyzer.deconvolved)
+        dps_conv_list.append(analyzer.input)
         phi_angles.append(angle)    
         
         # Generate plots
@@ -505,35 +506,93 @@ for scan in tqdm(scans[::4],desc="Processing scans"):
 
 
 
-
-
-
 #%%
 # Select ROI using sliders
-reference_analyzer = analzyer_list[0]
+reference_analyzer = analyzer_list[0]
 output_widget = ptNN_U.select_roi_from_shifted_grid(
     reference_analyzer, 
     df,
     grid_size_row=12,
     grid_size_col=11
 )
-
-
 #%%
 # In the next cell, after you've made your selection:
 roi_pos = output_widget.roi_pos
 #%%
 # Get corresponding frames across all projections
 roi_frames = ptNN_U.get_frames_from_roi(
-    analzyer_list,
+    analyzer_list,
     df,
     roi_pos,
     roi_radius=512//2,
     grid_size_col=11
 )
 #%%
-ptNN_U.plot_roi_frames_interactive(analzyer_list, roi_frames, df)
+ptNN_U.plot_roi_frames_interactive(analyzer_list, roi_frames, df)
 #%%
+
+
+
+
+
+
+
+# #%%
+# tests=[]
+# for analyzer in analyzer_list[0:1]:
+#     data = {
+#     'scan_number': analyzer.scan_number,
+#     'peak_positions': analyzer.peaks,
+#     'intensities': analyzer.calculate_frame_intensities_and_orientations(analyzer.dps[roi_frames[analyzer.scan_number][0]],analyzer.dps[0],plot=False)[0]
+#     }
+#     tests.append(data)
+
+
+#%%
+# Calculate normalized intensities
+normalized_results = ptNN_U.normalize_roi_peak_intensities2(
+    analyzer_list,
+    roi_frames,
+    tolerance=36
+)
+
+#%%
+# Calculate normalized intensities
+normalized_results = ptNN_U.normalize_roi_peak_intensities3(
+    analyzer_list,
+    roi_frames,
+    tolerance=36,
+    intensity_threshold=1e-4
+)
+#%%
+# Plot ROI frames with peaks
+ptNN_U.plot_roi_frames_with_peaks(
+    analyzer_list,
+    roi_frames,
+    normalized_results,
+    df
+)
+#%%
+ptNN_U.plot_summed_pattern_with_peaks(normalized_results)
+
+
+
+
+#%%
+# After calculating normalized results
+df_results, npy_data = ptNN_U.save_normalized_results(
+    normalized_results,
+    analyzer_list,
+    roi_frames,
+    df,
+    save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/'
+)
+#%%
+
+
+
+
+
 
 
 
@@ -541,9 +600,9 @@ ptNN_U.plot_roi_frames_interactive(analzyer_list, roi_frames, df)
 
 # i=6
 # fig = ptNN_U.visualize_shifted_grid(
-# analzyer_list[i],
-# y_shift=df.loc[df['scanNo'] == analzyer_list[i].scan_number, 'y_shift'].iloc[0],
-# x_shift=df.loc[df['scanNo'] == analzyer_list[i].scan_number, 'x_shift'].iloc[0],
+# analyzer_list[i],
+# y_shift=df.loc[df['scanNo'] == analyzer_list[i].scan_number, 'y_shift'].iloc[0],
+# x_shift=df.loc[df['scanNo'] == analyzer_list[i].scan_number, 'x_shift'].iloc[0],
 # grid_size_row=12,
 # grid_size_col=11,
 # log_scale=True
@@ -597,19 +656,6 @@ fig_q.show()
 fig_tomo = ptNN_U.visualize_tomo(tomo_data, intensity_threshold=0.)  # Try a lower threshold
 fig_tomo.show()
 #%%
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -758,21 +804,3 @@ for scan in scans:
 
 
 #%%
-
-
-
-
-
-
-# #%%
-# # Create dictionary to store diffraction patterns for each scan
-# dps_dict = {}
-
-# # Collect diffraction patterns for each scan
-# for scan in scans:
-#     try:
-#         analyzer.scan_number = scan
-#         analyzer.load_and_crop_data()
-#         dps_dict[scan] = analyzer.dps
-#     except:
-#         print(f"Error for scan {scan}")
