@@ -26,6 +26,7 @@ import pdb
 from ipywidgets import interact, FloatSlider, Button, VBox, Output
 import ipywidgets as widgets
 import pandas as pd
+from scipy.ndimage import gaussian_filter
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -365,7 +366,7 @@ def circular_neighborhood_intensity(image, x, y, radius=5,plot=True):
         # Set labels and title
         ax.set_title(f'Circular Neighborhood (Center: [{x}, {y}], Radius: {radius})')
         plt.show()
-    
+ 
     return np.sum(neighborhood[mask])
     
 def read_hdf5_file(file_path):
@@ -592,6 +593,18 @@ def plot_scan_positions(param_file, plot=True):
         plt.show()
     
     return pos_x, pos_y
+
+
+def get_angle_for_scan(df, scan_number):
+    '''
+    Get angle for a specific scan number
+    
+    Example File:
+    df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_projs_1537_1789_shifts.txt', 
+                 comment='#',  # Skip lines starting with #
+                 names=['Angle', 'y_shift', 'x_shift', 'scanNo'])  # Specify column names
+    '''
+    return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
 
 def convert_2D_to_3D_peaks(x, y, phi_angle):
     """
@@ -1275,7 +1288,6 @@ def visualize_3D_diffraction_patterns2(dps, phi_angles, intensity_threshold=0.1,
         np.add.at(volume, (x_idx, y_idx, z_idx), intensities)
         
         # Optional: Apply Gaussian smoothing
-        from scipy.ndimage import gaussian_filter
         volume = gaussian_filter(volume, sigma=1.0)
         
         tomo_data = {
@@ -1903,6 +1915,10 @@ def normalize_roi_peak_intensities(analyzers, roi_frames, tolerance=8):
         
         peak_groups.append(current_group)
     
+    # Add visualization of peak grouping
+    plot_peak_grouping_diagnostic(all_peaks, peak_groups, peak_intensities,
+                                "Original Method: Peak Grouping") 
+    
     # Calculate sums and normalize intensities
     results = {
         'peak_groups': [],  # List of peak positions in each group
@@ -1936,7 +1952,10 @@ def normalize_roi_peak_intensities(analyzers, roi_frames, tolerance=8):
     for i, center in enumerate(results['peak_group_centers']):
         print(f"Peak group {i}: center at ({center[0]:.1f}, {center[1]:.1f}), "
               f"total intensity: {results['summed_intensities'][i]:.2f}")
-    
+        
+    plot_normalization_comparison(results['peak_groups'], 
+                            results['normalized_intensities'],
+                            results['peak_group_centers'])
     return results
 
 
@@ -2014,7 +2033,17 @@ def normalize_roi_peak_intensities2(analyzers, roi_frames, tolerance=8):
                 i += 1
         
         peak_groups.append(current_group)
+        
+    # Add visualization of peak grouping
+    plot_peak_grouping_diagnostic(all_peaks, peak_groups, peak_intensities,
+                                "Version 2: Intensity-Prioritized Peak Grouping")
     
+    # Add summed pattern visualization
+    plt.figure(figsize=(8, 8))
+    plt.imshow(summed_pattern, norm=colors.LogNorm())
+    plt.colorbar(label='Intensity')
+    plt.title('Summed Pattern')
+    plt.show()
     # Calculate summed pattern intensities for each unique peak position
     results = {
         'peak_groups': [],
@@ -2063,6 +2092,10 @@ def normalize_roi_peak_intensities2(analyzers, roi_frames, tolerance=8):
         print(f"Peak group {i}: center at ({center[0]}, {center[1]}), "
               f"summed intensity: {results['summed_pattern_intensities'][i]:.2f}")
     
+    # Add visualization of normalization results
+    plot_normalization_comparison(results['peak_groups'], 
+                                results['normalized_intensities'],
+                                results['peak_group_centers'])
     return results
 
 
@@ -2154,19 +2187,22 @@ def normalize_roi_peak_intensities3(analyzers, roi_frames, tolerance=8, intensit
     
     # First pass: calculate all normalized intensities
     temp_groups = []
-    for group_idx, group in enumerate(peak_groups):
+    for group_idx, group in enumerate(peak_groups[0:2]):
         group_peaks = [all_peaks[i] for i in group]
         group_intensities = [peak_intensities[i] for i in group]
         max_intensity_idx = np.argmax(group_intensities)
         group_center = np.round(group_peaks[max_intensity_idx]).astype(int)
         group_sum = sum(group_intensities)
         
+        original_coords_peaks = np.array([[peak[0]//2, peak[1]//2] for peak in group_peaks])
         # Calculate intensity for this peak in summed pattern
-        summed_intensity = reference_analyzer.calculate_frame_intensities_and_orientations(
+        summed_intensity = reference_analyzer.calculate_frame_intensities_and_orientations_peaks(
             summed_pattern,
             reference_analyzer.dps[0]*len(reference_analyzer.dps[0]),
+            peaks=original_coords_peaks,
             plot=False
-        )[0][0]
+        )[0]#[0]
+        
 
         # Store temporary results including normalized intensities
         temp_group_info = {
@@ -2179,10 +2215,10 @@ def normalize_roi_peak_intensities3(analyzers, roi_frames, tolerance=8, intensit
         }
         
         # Calculate normalized intensities for each scan
-        for i in group:
+        for idx,i in enumerate(group):
             scan, frame, peak_idx = scan_frame_info[i]
             if scan in roi_frames:  # Only consider ROI frames
-                norm_intensity = peak_intensities[i] / summed_intensity if summed_intensity > 0 else 0
+                norm_intensity = peak_intensities[i] / summed_intensity[idx] if summed_intensity[idx] > 0 else 0
                 temp_group_info['normalized_intensities'][scan] = norm_intensity
                 temp_group_info['max_norm_intensity'] = max(
                     temp_group_info['max_norm_intensity'], 
@@ -2212,10 +2248,127 @@ def normalize_roi_peak_intensities3(analyzers, roi_frames, tolerance=8, intensit
     # Print summary
     print(f"Found {len(results['peak_groups'])} valid peak groups")
     for i, center in enumerate(results['peak_group_centers']):
-        print(f"Peak group {i}: center at ({center[0]}, {center[1]}), "
-              f"summed intensity: {results['summed_pattern_intensities'][i]:.2f}")
+        print(f"Peak group {i}: center at ({center[0]}, {center[1]})")
+        print(f"Summed intensities for peaks in group:")
+        for j, intensity in enumerate(results['summed_pattern_intensities'][i]):
+            print(f"  Peak {j}: {intensity:.2f}")
+            
+    return results
+
+
+
+def normalize_roi_peak_intensities4(analyzers, roi_frames, tolerance=8, intensity_threshold=0.01):
+    # Create summed pattern first (keep this part)
+    summed_pattern = None
+    reference_analyzer = analyzers[0]
+    
+    for analyzer in analyzers:
+        scan = analyzer.scan_number
+        if scan in roi_frames:
+            frame = roi_frames[scan][0]
+            if summed_pattern is None:
+                summed_pattern = analyzer.dps[frame].copy()
+            else:
+                summed_pattern += analyzer.dps[frame]
+    # Collect all peak data from all analyzers
+    all_peaks = []
+    peak_intensities = []
+    scan_frame_info = []
+    
+    for analyzer in analyzers:
+        scan = analyzer.scan_number
+        if scan in roi_frames:
+            frame = roi_frames[scan][0]
+            intensities, _ = analyzer.calculate_frame_intensities_and_orientations(
+                analyzer.dps[frame], 
+                analyzer.dps[0],
+                plot=False
+            )
+            
+            # Store peak positions and intensities
+            for peak_idx, peak in enumerate(analyzer.peaks):
+                all_peaks.append(np.array(peak) * 2)  # Convert to 512x512 coordinates
+                peak_intensities.append(intensities[peak_idx])
+                scan_frame_info.append((scan, frame, peak_idx))
+    
+    # Sort all peaks by intensity (highest to lowest)
+    sorted_indices = np.argsort(peak_intensities)[::-1]
+    peak_indices = sorted_indices.tolist()
+    
+    # Group peaks that are within tolerance distance, prioritizing higher intensities
+    peak_groups = []
+    
+    while peak_indices:
+        current_idx = peak_indices.pop(0)  # Take highest intensity peak
+        current_peak = all_peaks[current_idx]
+        current_intensity = peak_intensities[current_idx]
+        current_group = [current_idx]
+        
+        i = 0
+        while i < len(peak_indices):
+            idx = peak_indices[i]
+            peak = all_peaks[idx]
+            intensity = peak_intensities[idx]
+            distance = np.sqrt(np.sum((current_peak - peak)**2))
+            
+            if distance <= tolerance:
+                # Always add to group but keep the highest intensity peak as center
+                current_group.append(idx)
+                peak_indices.pop(i)
+            else:
+                i += 1
+        
+        peak_groups.append(current_group)
+    
+    results = {
+        'peak_groups': [],
+        'peak_group_centers': [],
+        'summed_pattern': summed_pattern,
+        'summed_intensities': {},      # Change to store by peak position
+        'frame_intensities': {},       # Add to store individual frame intensities
+        'normalized_intensities': {}
+    }
+    
+    # For each unique peak position
+    for group_idx, group in enumerate(peak_groups):
+        group_peaks = [all_peaks[i] for i in group]
+        # Use the highest intensity peak position as the representative position
+        max_intensity_idx = np.argmax([peak_intensities[i] for i in group])
+        peak_center = np.round(group_peaks[max_intensity_idx]).astype(int)
+        
+        # Calculate summed pattern intensity at this position
+        summed_intensity = reference_analyzer.calculate_frame_intensities_and_orientations_peaks(
+            summed_pattern,
+            reference_analyzer.dps[0]*len(reference_analyzer.dps[0]),
+            peaks=np.array([[peak_center[0]//2, peak_center[1]//2]]),
+            plot=False
+        )[0][0]
+        
+        results['peak_groups'].append(group_peaks)  # Add this line
+        results['peak_group_centers'].append(peak_center)
+        results['summed_intensities'][group_idx] = summed_intensity
+        results['frame_intensities'][group_idx] = {}
+        results['normalized_intensities'][group_idx] = {}
+        
+        # Calculate intensity at this position for each frame
+        for analyzer in analyzers:
+            scan = analyzer.scan_number
+            if scan in roi_frames:
+                frame = roi_frames[scan][0]
+                frame_intensity = reference_analyzer.calculate_frame_intensities_and_orientations_peaks(
+                    analyzer.dps[frame],
+                    analyzer.dps[0],
+                    peaks=np.array([[peak_center[0]//2, peak_center[1]//2]]),
+                    plot=False
+                )[0][0]
+                
+                results['frame_intensities'][group_idx][scan] = frame_intensity
+                results['normalized_intensities'][group_idx][scan] = (
+                    frame_intensity / summed_intensity if summed_intensity > 0 else 0
+                )
     
     return results
+
 
 
 def plot_roi_frames_with_peaks(analyzers, roi_frames, normalized_results, df):
@@ -2344,7 +2497,7 @@ def plot_summed_pattern_with_peaks(normalized_results):
     # Get summed pattern and peak centers
     summed_pattern = normalized_results['summed_pattern']
     peak_centers = [np.round(center).astype(int) for center in normalized_results['peak_group_centers']]
-    summed_intensities = normalized_results['summed_pattern_intensities']
+    summed_intensities = normalized_results['summed_pattern_intensities'][0]
     
     # Calculate alpha values for visualization
     nonzero_intensities = [i for i in summed_intensities if i > 0]
@@ -2397,7 +2550,80 @@ def plot_summed_pattern_with_peaks(normalized_results):
         print(info)
     
     plt.show()
-
+    
+def plot_summed_pattern_with_peaks2(normalized_results, analyzers):
+    """
+    Plot summed pattern with all peak groups overlaid
+    
+    Args:
+        normalized_results (dict): Results from normalize_roi_peak_intensities2
+    """
+    # Get summed pattern and peak centers
+    summed_pattern = normalized_results['summed_pattern']
+    peak_centers = [np.round(center).astype(int) for center in normalized_results['peak_group_centers']]
+    
+    # Get the actual summed pattern intensities for each peak
+    reference_analyzer = analyzers[0]  # You'll need to pass analyzers to this function
+    peak_centers_original = [[center[0]//2, center[1]//2] for center in peak_centers]
+    summed_intensities = reference_analyzer.calculate_frame_intensities_and_orientations_peaks(
+        summed_pattern,
+        reference_analyzer.dps[0]*len(reference_analyzer.dps[0]),
+        peaks=np.array(peak_centers_original),
+        plot=False
+    )[0]
+    
+    # Calculate alpha values for visualization
+    nonzero_intensities = [i for i in summed_intensities if i > 0]
+    if nonzero_intensities:
+        global_min = min(nonzero_intensities)
+        global_max = max(nonzero_intensities)
+    else:
+        global_min = 0
+        global_max = 1
+    
+    intensity_range = global_max - global_min if global_max > global_min else 1
+    
+    def calculate_alpha(intensity):
+        """Helper function to calculate alpha value"""
+        if intensity <= 0:
+            return 0.0
+        else:
+            # Use log scale for better visualization
+            alpha = np.log1p(intensity/global_min) / np.log1p(global_max/global_min)
+            return max(0.1, min(1, alpha))  # Minimum alpha of 0.1 for visibility
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+    im = ax.imshow(summed_pattern, norm=colors.LogNorm())
+    plt.colorbar(im, ax=ax, label='Intensity')
+    
+    # Add peaks
+    peak_info = []
+    for peak_idx, (center, intensity) in enumerate(zip(peak_centers, summed_intensities)):
+        alpha = calculate_alpha(intensity)
+        # Plot peak position
+        ax.scatter(center[1], center[0], color='red', s=100, alpha=alpha,
+                  label=f'Peak {peak_idx}')
+        # Add circle around peak
+        circle = plt.Circle((center[1], center[0]), 8, color='red', 
+                          fill=False, alpha=alpha)
+        ax.add_patch(circle)
+        
+        # Store peak info for printing
+        peak_info.append(f"Peak {peak_idx}: ({center[0]}, {center[1]}), "
+                       f"intensity: {intensity:.2f}, alpha: {alpha:.3f}")
+    
+    ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left')
+    ax.set_title('Summed Pattern with Peak Groups')
+    plt.tight_layout()
+    
+    # Print peak information
+    print("Peak Information:")
+    for info in peak_info:
+        print(info)
+    
+    plt.show()
+    
 def save_normalized_results(normalized_results, analyzers, roi_frames, df, save_path):
     """
     Save normalized results to CSV and NPY files
@@ -2485,3 +2711,275 @@ def save_normalized_results(normalized_results, analyzers, roi_frames, df, save_
     print(f"NPY: {npy_path}")
     
     return df_results, npy_data
+
+
+
+def plot_peak_grouping_diagnostic(all_peaks, peak_groups, peak_intensities, title="Peak Grouping Visualization"):
+    """Helper function to visualize peak grouping"""
+    plt.figure(figsize=(12, 8))
+    
+    # Plot all peaks as small dots
+    all_peaks = np.array(all_peaks)
+    plt.scatter(all_peaks[:, 1], all_peaks[:, 0], c='gray', alpha=0.3, s=20, label='All Peaks')
+    
+    # Plot each group with a different color
+    colors = plt.cm.rainbow(np.linspace(0, 1, len(peak_groups)))
+    for group_idx, (group, color) in enumerate(zip(peak_groups, colors)):
+        group_peaks = np.array([all_peaks[i] for i in group])
+        group_intensities = np.array([peak_intensities[i] for i in group])
+        
+        # Size points by intensity
+        sizes = 50 + 200 * (group_intensities / max(peak_intensities))
+        
+        plt.scatter(group_peaks[:, 1], group_peaks[:, 0], 
+                   c=[color], s=sizes, alpha=0.6,
+                   label=f'Group {group_idx}')
+        
+        # Draw lines connecting peaks in the same group
+        if len(group_peaks) > 1:
+            center = group_peaks.mean(axis=0)
+            for peak in group_peaks:
+                plt.plot([center[1], peak[1]], [center[0], peak[0]], 
+                        c=color, alpha=0.2)
+    
+    plt.title(title)
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+def plot_normalization_comparison(peak_groups, normalized_intensities, peak_group_centers):
+    """Helper function to visualize normalization results"""
+    # Get unique scans
+    scans = sorted(normalized_intensities.keys())
+    n_scans = len(scans)
+    n_groups = len(peak_groups)
+    
+    # Create intensity matrix
+    intensity_matrix = np.zeros((n_scans, n_groups))
+    for i, scan in enumerate(scans):
+        for group_idx in normalized_intensities[scan]:
+            intensity_matrix[i, group_idx] = normalized_intensities[scan][group_idx]
+    
+    # Plot heatmap
+    plt.figure(figsize=(15, 8))
+    plt.subplot(121)
+    im = plt.imshow(intensity_matrix, aspect='auto', cmap='viridis')
+    plt.colorbar(im, label='Normalized Intensity')
+    plt.xlabel('Peak Group')
+    plt.ylabel('Scan Number')
+    plt.title('Normalized Intensities Heatmap')
+    
+    # Plot peak positions with intensity
+    plt.subplot(122)
+    peak_centers = np.array(peak_group_centers)
+    max_intensities = np.max(intensity_matrix, axis=0)
+    
+    plt.scatter(peak_centers[:, 1], peak_centers[:, 0], 
+               c=max_intensities, cmap='viridis',
+               s=100, alpha=0.6)
+    
+    plt.colorbar(label='Max Normalized Intensity')
+    plt.xlabel('X')
+    plt.ylabel('Y')
+    plt.title('Peak Positions colored by Max Intensity')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def plot_summed_pattern_with_peaks4(normalized_results):
+    """
+    Plot summed pattern with all peak groups overlaid
+    
+    Args:
+        normalized_results (dict): Results from normalize_roi_peak_intensities4
+    """
+    # Get summed pattern and peak centers
+    summed_pattern = normalized_results['summed_pattern']
+    peak_centers = normalized_results['peak_group_centers']
+    
+    # Calculate alpha values for visualization
+    summed_intensities = [normalized_results['summed_intensities'][i] for i in range(len(peak_centers))]
+    nonzero_intensities = [i for i in summed_intensities if i > 0]
+    
+    if nonzero_intensities:
+        global_min = min(nonzero_intensities)
+        global_max = max(nonzero_intensities)
+    else:
+        global_min = 0
+        global_max = 1
+    
+    def calculate_alpha(intensity):
+        """Helper function to calculate alpha value"""
+        if intensity <= 0:
+            return 0.0
+        else:
+            # Use log scale for better visualization
+            alpha = np.log1p(intensity/global_min) / np.log1p(global_max/global_min)
+            return max(0.1, min(1, alpha))
+    
+    # Create plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+    im = ax.imshow(summed_pattern, norm=colors.LogNorm())
+    plt.colorbar(im, ax=ax, label='Intensity')
+    
+    # Add peaks
+    peak_info = []
+    for peak_idx, (center, intensity) in enumerate(zip(peak_centers, summed_intensities)):
+        alpha = calculate_alpha(intensity)
+        # Plot peak position
+        ax.scatter(center[1], center[0], color='red', s=100, alpha=alpha,
+                  label=f'Peak {peak_idx}')
+        # Add circle around peak
+        circle = plt.Circle((center[1], center[0]), 8, color='red', 
+                          fill=False, alpha=alpha)
+        ax.add_patch(circle)
+        
+        # Store peak info for printing
+        peak_info.append(f"Peak {peak_idx}: ({center[0]}, {center[1]}), "
+                       f"intensity: {intensity:.2f}, alpha: {alpha:.3f}")
+    
+    ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left')
+    ax.set_title('Summed Pattern with Peak Groups')
+    plt.tight_layout()
+    
+    # Print peak information
+    print("Peak Information:")
+    for info in peak_info:
+        print(info)
+    
+    plt.show()
+
+def plot_roi_frames_with_peaks4(analyzers, roi_frames, normalized_results, df):
+    """
+    Interactive plot of ROI frames with peak groups overlaid
+    
+    Args:
+        analyzers (list): List of DiffractionAnalyzer objects
+        roi_frames (dict): Dictionary mapping scan numbers to frame lists
+        normalized_results (dict): Results from normalize_roi_peak_intensities4
+        df (DataFrame): DataFrame containing scan information
+    """
+    # Create mapping of analyzers by scan number
+    analyzer_dict = {a.scan_number: a for a in analyzers}
+    
+    # Get list of scans and corresponding angles
+    scans = list(roi_frames.keys())
+    angles = [df.loc[df['scanNo'] == scan, 'Angle'].values[0] for scan in scans]
+    
+    # Get peak centers
+    peak_centers = normalized_results['peak_group_centers']
+    
+    # Calculate global min and max intensities for alpha normalization
+    all_intensities = []
+    for scan in scans:
+        for peak_idx in range(len(peak_centers)):
+            if peak_idx in normalized_results['normalized_intensities'] and scan in normalized_results['normalized_intensities'][peak_idx]:
+                all_intensities.append(normalized_results['normalized_intensities'][peak_idx][scan])
+    
+    global_min = min(all_intensities) if all_intensities else 0
+    global_max = max(all_intensities) if all_intensities else 1
+    intensity_range = global_max - global_min if global_max > global_min else 1
+    
+    # Create widgets
+    scan_slider = widgets.IntSlider(
+        value=0,
+        min=0,
+        max=len(scans)-1,
+        step=1,
+        description='Scan Index:',
+        continuous_update=False
+    )
+    
+    show_peaks = widgets.Checkbox(
+        value=True,
+        description='Show peaks',
+        disabled=False
+    )
+    
+    scan_info = widgets.HTML(
+        value="Scan info will appear here"
+    )
+    
+    plot_output = widgets.Output()
+    
+    def update_plot(change):
+        with plot_output:
+            plot_output.clear_output(wait=True)
+            
+            scan_idx = scan_slider.value
+            scan = scans[scan_idx]
+            angle = angles[scan_idx]
+            frame = roi_frames[scan][0]
+            analyzer = analyzer_dict[scan]
+            
+            # Update info
+            peak_info = ""
+            for peak_idx in range(len(peak_centers)):
+                if peak_idx in normalized_results['normalized_intensities'] and scan in normalized_results['normalized_intensities'][peak_idx]:
+                    norm_intensity = normalized_results['normalized_intensities'][peak_idx][scan]
+                    center = peak_centers[peak_idx]
+                    alpha = (norm_intensity - global_min) / intensity_range
+                    alpha = max(0.01, min(1, alpha))
+                    peak_info += f"Peak {peak_idx} at ({center[0]}, {center[1]}): {norm_intensity:.8f} (alpha: {alpha:.3f})<br>"
+            
+            scan_info.value = f"""
+            <b>Scan</b>: {scan}<br>
+            <b>Angle</b>: {angle:.2f}°<br>
+            <b>Frame</b>: {frame}<br>
+            <b>Peak Intensities</b>:<br>{peak_info}
+            """
+            
+            # Create plot
+            fig, ax = plt.subplots(figsize=(8, 6))
+            im = ax.imshow(analyzer.dps[frame], norm=colors.LogNorm())
+            plt.colorbar(im, ax=ax, label='Intensity')
+            
+            # Overlay peaks if checkbox is checked
+            if show_peaks.value:
+                for peak_idx in range(len(peak_centers)):
+                    if peak_idx in normalized_results['normalized_intensities'] and scan in normalized_results['normalized_intensities'][peak_idx]:
+                        norm_intensity = normalized_results['normalized_intensities'][peak_idx][scan]
+                        center = peak_centers[peak_idx]
+                        alpha = (norm_intensity - global_min) / intensity_range
+                        alpha = max(0.01, min(1, alpha))
+                        
+                        ax.scatter(center[1], center[0], color='red', s=100, alpha=alpha,
+                                 label=f'Peak {peak_idx}')
+                        circle = plt.Circle((center[1], center[0]), 8, color='red', 
+                                         fill=False, alpha=alpha)
+                        ax.add_patch(circle)
+                
+                ax.legend(bbox_to_anchor=(1.15, 1), loc='upper left')
+            
+            ax.set_title(f'Scan {scan}, Frame {frame}, Angle {angle:.1f}°')
+            plt.tight_layout()
+            plt.show()
+    
+    # Connect callbacks
+    scan_slider.observe(update_plot, names='value')
+    show_peaks.observe(update_plot, names='value')
+    
+    # Create layout and display
+    controls = widgets.VBox([scan_slider, show_peaks, scan_info])
+    display(controls)
+    display(plot_output)
+    
+    # Initial plot
+    update_plot(None)

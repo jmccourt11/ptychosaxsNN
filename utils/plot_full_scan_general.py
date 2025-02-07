@@ -155,6 +155,46 @@ class DiffractionAnalyzer:
             frame_orientations.append(angle_deg)
         
         return frame_intensities, frame_orientations
+    
+    def calculate_frame_intensities_and_orientations_peaks(self, image, ref_image,peaks, plot=False):
+        """Helper function to calculate intensities and orientations for a single frame"""
+        sub = np.subtract(image, ref_image, dtype=float)
+        frame_intensities = []
+        frame_orientations = []
+        
+        for peak in peaks:
+            x, y = peak
+            x = x*2  # Scale for 512x512
+            y = y*2  # Scale for 512x512
+            
+            # Calculate intensity using circular neighborhood
+            intensity = ptNN_U.circular_neighborhood_intensity(
+                sub, x, y, radius=self.radius, plot=plot
+            )
+            frame_intensities.append(intensity)
+            
+            # Calculate orientation
+            x_min = max(0, x - self.radius)
+            x_max = min(sub.shape[0], x + self.radius + 1)
+            y_min = max(0, y - self.radius)
+            y_max = min(sub.shape[1], y + self.radius + 1)
+            
+            region = sub[x_min:x_max, y_min:y_max]
+            y_coords, x_coords = np.mgrid[0:region.shape[0], 0:region.shape[1]]
+            total_intensity = np.sum(region)
+            
+            if total_intensity > 0:
+                center_x = np.sum(x_coords * region) / total_intensity
+                center_y = np.sum(y_coords * region) / total_intensity
+                angle = np.arctan2(center_y - region.shape[0]/2, 
+                                    center_x - region.shape[1]/2)
+                angle_deg = (np.degrees(angle) + 360) % 360
+            else:
+                angle_deg = 0
+                
+            frame_orientations.append(angle_deg)
+        
+        return frame_intensities, frame_orientations
 
     def analyze_peaks(self, radius=56):
         """Analyze peaks for both intensity and orientation in the summed dataset"""
@@ -411,14 +451,6 @@ df = pd.read_csv('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/Sample6_tomo6_proj
 # Convert scanNo to integer if needed
 df['scanNo'] = df['scanNo'].astype(int)
 
-#%%
-# Get angle for a specific scan number
-def get_angle_for_scan(df, scan_number):
-    return df.loc[df['scanNo'] == scan_number, 'Angle'].values[0]
-#%%
-
-
-
 scans = df['scanNo'].astype(int)
 # peaks_list = []
 phi_angles = []
@@ -443,7 +475,7 @@ for scan in tqdm(scans,desc="Processing scans"):
             peak_threshold=0.25
         )
         analyzer.load_model(model_path)
-        angle = get_angle_for_scan(df, scan)
+        angle = ptNN_U.get_angle_for_scan(df, scan)
         print(angle)
         # Update scan number for current iteration
         analyzer.scan_number = scan
@@ -476,19 +508,6 @@ for scan in tqdm(scans,desc="Processing scans"):
         # roi=analyzer.dps[frame_number]
         # rois.append(roi)
         
-
-        # fig = ptNN_U.visualize_shifted_grid(
-        # analyzer,
-        # y_shift=df.loc[df['scanNo'] == scan, 'y_shift'].iloc[0],
-        # x_shift=df.loc[df['scanNo'] == scan, 'x_shift'].iloc[0],
-        # grid_size_row=12,
-        # grid_size_col=11,
-        # log_scale=True
-        # )
-        # plt.show()
-        
-        
-        
         # Save peak analysis
         #analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
     
@@ -503,6 +522,23 @@ for scan in tqdm(scans,desc="Processing scans"):
 # ptNN_U.group_3D_peaks(peaks_list, phi_angles, tolerance=64).keys()
 
 
+#%%
+scan_example=1635
+# Find the analyzer with matching scan number
+analyzer = next((a for a in analyzer_list if a.scan_number == scan_example), None)
+
+if analyzer is not None:
+    fig = ptNN_U.visualize_shifted_grid(
+        analyzer,
+        y_shift=df.loc[df['scanNo'] == scan_example, 'y_shift'].iloc[0],
+        x_shift=df.loc[df['scanNo'] == scan_example, 'x_shift'].iloc[0],
+        grid_size_row=12,
+        grid_size_col=11,
+        log_scale=True
+    )
+    plt.show()
+else:
+    print(f"No analyzer found for scan {scan_example}")
 
 
 
@@ -535,8 +571,6 @@ ptNN_U.plot_roi_frames_interactive(analyzer_list, roi_frames, df)
 
 
 
-
-
 # #%%
 # tests=[]
 # for analyzer in analyzer_list[0:1]:
@@ -546,7 +580,13 @@ ptNN_U.plot_roi_frames_interactive(analyzer_list, roi_frames, df)
 #     'intensities': analyzer.calculate_frame_intensities_and_orientations(analyzer.dps[roi_frames[analyzer.scan_number][0]],analyzer.dps[0],plot=False)[0]
 #     }
 #     tests.append(data)
-
+#%%
+# Calculate normalized intensities
+normalized_results = ptNN_U.normalize_roi_peak_intensities(
+    analyzer_list,
+    roi_frames,
+    tolerance=36
+)
 
 #%%
 # Calculate normalized intensities
@@ -556,14 +596,67 @@ normalized_results = ptNN_U.normalize_roi_peak_intensities2(
     tolerance=36
 )
 
+
+#%%
+# Original method with visualizations
+results1 = ptNN_U.normalize_roi_peak_intensities(analyzer_list, roi_frames, tolerance=36)
+#%%
+# Version 2 with visualizations
+results2 = ptNN_U.normalize_roi_peak_intensities2(analyzer_list, roi_frames, tolerance=36)
+#%%
+
+
 #%%
 # Calculate normalized intensities
 normalized_results = ptNN_U.normalize_roi_peak_intensities3(
     analyzer_list,
     roi_frames,
     tolerance=36,
-    intensity_threshold=1e-4
+    intensity_threshold=1e-4#1e-4
 )
+
+
+
+
+
+
+
+
+
+
+
+#%%
+# Calculate normalized intensities
+normalized_results = ptNN_U.normalize_roi_peak_intensities4(
+    analyzer_list,
+    roi_frames,
+    tolerance=36,
+    intensity_threshold=1e-4#1e-4
+)
+#%%
+# Plot ROI frames with peaks
+ptNN_U.plot_roi_frames_with_peaks4(
+    analyzer_list,
+    roi_frames,
+    normalized_results,
+    df
+)
+#%%
+ptNN_U.plot_summed_pattern_with_peaks4(normalized_results)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #%%
 # Plot ROI frames with peaks
 ptNN_U.plot_roi_frames_with_peaks(
@@ -574,9 +667,9 @@ ptNN_U.plot_roi_frames_with_peaks(
 )
 #%%
 ptNN_U.plot_summed_pattern_with_peaks(normalized_results)
-
-
-
+#ptNN_U.plot_summed_pattern_with_peaks2(normalized_results, analyzer_list)
+#ptNN_U.plot_summed_pattern_with_peaks(results1)
+#ptNN_U.plot_summed_pattern_with_peaks(results2)
 
 #%%
 # After calculating normalized results
@@ -594,21 +687,51 @@ df_results, npy_data = ptNN_U.save_normalized_results(
 
 
 
+#%%
+# Initialize with first valid frame
+valid_frames = []
+for analyzer in analyzer_list:
+    if analyzer.scan_number in roi_frames:
+        frame_idx = roi_frames[analyzer.scan_number][0]
+        valid_frames.append(analyzer.dps[frame_idx])
+
+dps_sum1 = np.sum(valid_frames, axis=0)
+
+resultT1, sfT1, bkgT1 = ptNN_U.preprocess_cindy(dps_sum1)
+input1=resultT1[0][0]
+resultTa1 = resultT1.to(device=analyzer_list[0].model.device, dtype=torch.float)
+deconvolved1 = analyzer_list[0].model.model(resultTa1).detach().to("cpu").numpy()[0][0]
+fig,ax=plt.subplots(1,2)
+ax[0].imshow(input1)
+ax[1].imshow(deconvolved1)
+plt.show()
+#%%
+center_cut=48
+n_peaks=10
+peak_threshold=0.25
+
+# Find peaks in deconvolved image
+peaks1 = ptNN_U.find_peaks2d(
+    deconvolved1,
+    center_cut=center_cut,
+    n=n_peaks,
+    threshold=peak_threshold,
+    plot=True
+)
+#%% 
+# Adjust peaks if needed (similar to your original script)
+center_x, center_y = 134, 124  # You might want to make these parameters
+peaks_shifted = [(p[0]-center_x, p[1]-center_y) for p in peaks1]
+updated_peaks = ptNN_U.ensure_inverse_peaks(peaks_shifted,tolerance=16)
+peaks1 = [(p[0]+center_x, p[1]+center_y) for p in updated_peaks]
 
 
-
-
-# i=6
-# fig = ptNN_U.visualize_shifted_grid(
-# analyzer_list[i],
-# y_shift=df.loc[df['scanNo'] == analyzer_list[i].scan_number, 'y_shift'].iloc[0],
-# x_shift=df.loc[df['scanNo'] == analyzer_list[i].scan_number, 'x_shift'].iloc[0],
-# grid_size_row=12,
-# grid_size_col=11,
-# log_scale=True
-# )
-# plt.show()
-
+fig,ax=plt.subplots()
+im=ax.imshow(input1, cmap='jet', interpolation='nearest')
+peak_y, peak_x = zip(*peaks1)
+ax.scatter(peak_x, peak_y, color='red', marker='x', s=100, label='Peaks')
+plt.colorbar(im)
+plt.show()
 
 
 
@@ -647,7 +770,7 @@ fig_q, tomo_data = ptNN_U.visualize_3D_diffraction_patterns2(
     detector_distance=5570,
     pixel_size=0.075,
     return_data=True,
-    grid_size=256  # Adjust resolution as needed
+    grid_size=256#256  # Adjust resolution as needed
 )
 fig_q.show()
 
@@ -665,12 +788,42 @@ fig_tomo.show()
 
 
 
+
+
+
+
+#%%
+# analyzer_list[0].base_path
+# Load data
+data = ptNN_U.read_hdf5_file('/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly918/data_roi0_Ndp512_para.hdf5')
+pos_x = data['ppX']
+pos_y = data['ppY']
+
+# Create figure
+plt.figure(figsize=(10, 10))
+
+# Plot all points
+plotting_pos=pos_y
+plotting_pos=plotting_pos-np.mean(plotting_pos)
+plt.plot(plotting_pos, color='blue')
+plt.ylim(np.min(plotting_pos),np.max(plotting_pos))
+plt.title('Scan Positions')
+plt.grid(True)
+plt.show()
+#%%
+
+
+
+
+
+
 #%%
 # First pass: collect all peak data
 global_peak_data = {}
 scan_analyzers = {}
 
-for scan in scans:
+scans_subset=scans[68:70]
+for scan in scans_subset:
     try:
         analyzer = DiffractionAnalyzer(
             base_path='/net/micdata/data2/12IDC/2021_Nov/ptycho/',
@@ -720,7 +873,7 @@ for scan in scans:
 
 #%%
 # Second pass: analyze with global normalization
-for scan in scans:
+for scan in scans_subset:
     try:
         analyzer = scan_analyzers[scan]
         
@@ -796,7 +949,7 @@ for scan in scans:
         analyzer.plot_full_scan(grid_size_row=12, grid_size_col=11)
         
         # Save peak analysis
-        analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
+        #analyzer.save_peak_analysis(save_path='/net/micdata/data2/12IDC/ptychosaxs/peak_analysis/')
         
     except Exception as e:
         print(f"Error for scan {scan}: {str(e)}")
