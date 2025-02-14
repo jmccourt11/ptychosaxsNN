@@ -12,6 +12,267 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 from scipy.ndimage import label
 from scipy.ndimage import maximum_filter
+from tqdm import tqdm
+from scipy.io import loadmat
+from scipy.spatial.transform import Rotation
+
+def get_orientation_matrix(peak_positions, peak_values):
+    """
+    Convert peak positions to orientation matrix using weighted peaks
+    """
+    # Center the peaks around origin
+    center = np.mean(peak_positions, axis=0)
+    centered_peaks = peak_positions - center
+    
+    # Calculate covariance matrix with peak value weights
+    weights = peak_values / np.sum(peak_values)
+    cov_matrix = np.zeros((3, 3))
+    for peak, weight in zip(centered_peaks, weights):
+        cov_matrix += weight * np.outer(peak, peak)
+    
+    return cov_matrix
+
+def get_axis_angle(voxel_peaks, voxel_values, ref_peaks, ref_values):
+    """
+    Calculate axis-angle representation between voxel orientation and reference orientation
+    with improved eigenvector handling
+    """
+    # Get orientation matrices
+    voxel_orient = get_orientation_matrix(voxel_peaks, voxel_values)
+    ref_orient = get_orientation_matrix(ref_peaks, ref_values)
+    
+    # Get principal directions (eigenvectors) and sort by eigenvalues
+    voxel_eigvals, voxel_eigvecs = np.linalg.eigh(voxel_orient)
+    ref_eigvals, ref_eigvecs = np.linalg.eigh(ref_orient)
+    
+    # Sort eigenvectors by eigenvalue magnitude
+    voxel_order = np.argsort(-np.abs(voxel_eigvals))
+    ref_order = np.argsort(-np.abs(ref_eigvals))
+    
+    voxel_eigvecs = voxel_eigvecs[:, voxel_order]
+    ref_eigvecs = ref_eigvecs[:, ref_order]
+    
+    # Try both orientations of each eigenvector to find best alignment
+    best_rmsd = float('inf')
+    best_R = None
+    
+    for flip_x in [-1, 1]:
+        for flip_y in [-1, 1]:
+            for flip_z in [-1, 1]:
+                test_voxel_eigvecs = voxel_eigvecs.copy()
+                test_voxel_eigvecs[:, 0] *= flip_x
+                test_voxel_eigvecs[:, 1] *= flip_y
+                test_voxel_eigvecs[:, 2] *= flip_z
+                
+                R = Rotation.align_vectors(ref_eigvecs.T, test_voxel_eigvecs.T)[0]
+                rotated = R.apply(voxel_peaks)
+                rmsd = np.sqrt(np.mean(np.sum((rotated - ref_peaks)**2, axis=1)))
+                
+                if rmsd < best_rmsd:
+                    best_rmsd = rmsd
+                    best_R = R
+    
+    # Convert best rotation to axis-angle representation
+    axis, angle = best_R.as_rotvec(degrees=True), np.linalg.norm(best_R.as_rotvec(degrees=True))
+    
+    return axis, angle, best_rmsd
+
+
+def get_axis_angle_simple(voxel_peaks, voxel_values, ref_peaks, ref_values):
+    """
+    Calculate rotation (axis and angle) needed to align voxel peaks with reference peaks
+    
+    Args:
+        voxel_peaks: peak positions for voxel FFT
+        voxel_values: peak intensities for voxel FFT
+        ref_peaks: reference peak positions
+        ref_values: reference peak intensities
+    
+    Returns:
+        axis: unit vector representing rotation axis
+        angle: rotation angle in degrees (0-180)
+        rmsd: root mean square deviation after alignment
+    """
+    # Sort peaks by intensity and use top N peaks
+    N = min(6, len(voxel_peaks), len(ref_peaks))
+    voxel_order = np.argsort(-voxel_values)[:N]
+    ref_order = np.argsort(-ref_values)[:N]
+    
+    voxel_peaks = voxel_peaks[voxel_order]
+    ref_peaks = ref_peaks[ref_order]
+    voxel_values = voxel_values[voxel_order]
+    ref_values = ref_values[ref_order]
+    
+    # #only take the top 2 peaks
+    # voxel_peaks=voxel_peaks[:2]
+    # ref_peaks=ref_peaks[:2]
+    # voxel_values=voxel_values[:2]
+    # ref_values=ref_values[:2]
+    
+    # Get principal directions for both sets of peaks
+    voxel_eigvals, voxel_eigvecs = np.linalg.eigh(get_orientation_matrix(voxel_peaks, voxel_values))
+    ref_eigvals, ref_eigvecs = np.linalg.eigh(get_orientation_matrix(ref_peaks, ref_values))
+    
+    # Sort eigenvectors by eigenvalue magnitude
+    voxel_order = np.argsort(-np.abs(voxel_eigvals))
+    ref_order = np.argsort(-np.abs(ref_eigvals))
+    
+    voxel_eigvecs = voxel_eigvecs[:, voxel_order]
+    ref_eigvecs = ref_eigvecs[:, ref_order]
+    
+    # Try both possible alignments
+    R1 = Rotation.align_vectors(ref_eigvecs.T, voxel_eigvecs.T)[0]
+    R2 = Rotation.align_vectors(-ref_eigvecs.T, voxel_eigvecs.T)[0]
+    
+    rotated1 = R1.apply(voxel_peaks)
+    rotated2 = R2.apply(voxel_peaks)
+    
+    rmsd1 = np.sqrt(np.mean(np.sum((rotated1 - ref_peaks)**2, axis=1)))
+    rmsd2 = np.sqrt(np.mean(np.sum((rotated2 - ref_peaks)**2, axis=1)))
+    
+    # Choose the better alignment
+    if rmsd1 < rmsd2:
+        R = R1
+        rmsd = rmsd1
+    else:
+        R = R2
+        rmsd = rmsd2
+    
+    # Convert to axis-angle representation
+    rotvec = R.as_rotvec(degrees=True)
+    angle = np.linalg.norm(rotvec)
+    
+    # Normalize angle to 0-180 range and adjust axis accordingly
+    if angle > 180:
+        angle = 360 - angle
+        axis = -rotvec / np.linalg.norm(rotvec)
+    else:
+        axis = rotvec / np.linalg.norm(rotvec)
+    
+    # Force consistent axis direction (z component should be positive for z-axis rotation)
+    if axis[2] < 0:
+        axis = -axis
+        
+    return axis, angle, rmsd
+
+
+def load_cellinfo_data(file_path):
+    """
+    Load and extract arrays from the 'cellinfo' structure in the given .mat file.
+    
+    Args:
+        file_path (str): Path to the .mat file.
+        
+    Returns:
+        dict: A dictionary where keys are field names and values are the corresponding arrays.
+    """
+    
+    # Load the .mat file
+    mat_data = loadmat(file_path)
+    
+    # Extract the 'cellinfo' data
+    cellinfo_data = mat_data.get('cellinfo')
+    
+    if cellinfo_data is None:
+        raise ValueError("'cellinfo' key not found in the .mat file.")
+    
+    # Initialize a dictionary to store the extracted data
+    data_dict = {}
+    
+    # Iterate through each field and extract its content
+    for field_name in cellinfo_data.dtype.names:
+        data_dict[field_name] = cellinfo_data[field_name][0, 0]
+    
+    return data_dict
+
+
+# Add VTK saving functionality
+def save_peaks_to_vtk(fig_RS, filename="fft_peaks.vtp"):
+    """
+    Save peaks from a Plotly figure to VTK format.
+    
+    Args:
+        fig_RS: Plotly figure containing 3D scatter traces
+        filename: output filename (should end in .vtp)
+    """
+    import vtk
+    from vtk.util import numpy_support
+    
+    # Extract all points and their values from the Plotly figure
+    all_points = []
+    all_values = []
+    all_voxel_coords = []
+    
+    for trace in fig_RS.data:
+        # Extract coordinates and values
+        x = np.array(trace.x)
+        y = np.array(trace.y)
+        z = np.array(trace.z)
+        values = np.array(trace.marker.color)
+        
+        # Extract voxel coordinates from the trace name
+        name_parts = trace.name.split(',')
+        voxel_x = int(name_parts[0].split('=')[1])
+        voxel_y = int(name_parts[1].split('=')[1])
+        voxel_z = int(name_parts[2].split('=')[1])
+        
+        # Store points and values
+        points = np.column_stack((x, y, z))
+        all_points.append(points)
+        all_values.append(values)
+        all_voxel_coords.append(np.array([[voxel_x, voxel_y, voxel_z]] * len(x)))
+    
+    # Combine all data
+    all_points = np.vstack(all_points)
+    all_values = np.concatenate(all_values)
+    all_voxel_coords = np.vstack(all_voxel_coords)
+    
+    # Create vtkPoints object
+    vtk_points = vtk.vtkPoints()
+    for point in all_points:
+        vtk_points.InsertNextPoint(point)
+    
+    # Create vtkPolyData object
+    polydata = vtk.vtkPolyData()
+    polydata.SetPoints(vtk_points)
+    
+    # Create vertex cells
+    vertices = vtk.vtkCellArray()
+    for i in range(len(all_points)):
+        vertex = vtk.vtkVertex()
+        vertex.GetPointIds().SetId(0, i)
+        vertices.InsertNextCell(vertex)
+    polydata.SetVerts(vertices)
+    
+    # Add peak values as point data
+    vtk_values = numpy_support.numpy_to_vtk(all_values)
+    vtk_values.SetName("peak_intensity")
+    polydata.GetPointData().AddArray(vtk_values)
+    
+    # Add normalized values
+    normalized_values = all_values / np.max(all_values)
+    vtk_normalized = numpy_support.numpy_to_vtk(normalized_values)
+    vtk_normalized.SetName("normalized_intensity")
+    polydata.GetPointData().AddArray(vtk_normalized)
+    
+    # Add voxel coordinates as point data
+    for i, name in enumerate(['voxel_x', 'voxel_y', 'voxel_z']):
+        vtk_coord = numpy_support.numpy_to_vtk(all_voxel_coords[:, i])
+        vtk_coord.SetName(name)
+        polydata.GetPointData().AddArray(vtk_coord)
+    
+    # Write to file
+    writer = vtk.vtkXMLPolyDataWriter()
+    writer.SetFileName(filename)
+    writer.SetInputData(polydata)
+    writer.Write()
+    
+    print(f"Saved {len(all_points)} peaks to {filename}")
+    print("Data fields saved:")
+    print("- peak_intensity: raw peak values")
+    print("- normalized_intensity: values normalized to [0,1]")
+    print("- voxel_x, voxel_y, voxel_z: voxel coordinates")
+
 
 def find_peaks_3d(magnitude, threshold=0.1, sigma=1):
     # Apply Gaussian filter to smooth the data
@@ -36,6 +297,46 @@ def find_peaks_3d(magnitude, threshold=0.1, sigma=1):
     
     return peak_positions, smoothed[peaks]
 
+def find_peaks_3d_cutoff(magnitude, threshold=0.1, sigma=1, center_cutoff_radius=5):
+    """
+    Find peaks in 3D data with central region exclusion
+    
+    Args:
+        magnitude: 3D numpy array
+        threshold: relative threshold value (0-1)
+        sigma: smoothing parameter for Gaussian filter
+        center_cutoff_radius: radius (in pixels) around center to exclude
+    
+    Returns:
+        peak_positions: array of peak coordinates
+        peak_values: array of peak intensities
+    """
+    # Apply Gaussian filter to smooth the data
+    smoothed = gaussian_filter(magnitude, sigma=sigma)
+    
+    # Create central cutoff mask
+    center_z, center_y, center_x = np.array(magnitude.shape) // 2
+    z, y, x = np.ogrid[:magnitude.shape[0], :magnitude.shape[1], :magnitude.shape[2]]
+    central_mask = (x - center_x)**2 + (y - center_y)**2 + (z - center_z)**2 > center_cutoff_radius**2
+    
+    # Apply threshold
+    max_intensity = smoothed.max()
+    threshold_value = max_intensity * threshold
+    threshold_mask = smoothed > threshold_value
+    
+    # Use maximum filter to find local maxima
+    local_max = maximum_filter(smoothed, size=3) == smoothed
+    
+    # Combine masks: threshold, local maxima, and central cutoff
+    peaks = threshold_mask & local_max & central_mask
+    
+    # Label the peaks
+    labeled, num_features = label(peaks)
+    
+    # Extract peak positions
+    peak_positions = np.argwhere(peaks)
+    
+    return peak_positions, smoothed[peaks]
 
 def calculate_orientation(projection, kx, ky):
     """Calculate primary orientation in a 2D projection using center of mass"""
@@ -106,6 +407,23 @@ def calculate_center_of_mass(image):
     
     return x_com, y_com
 
+
+def calculate_peaks_com(peaks_x, peaks_y, peaks_z, peak_values):
+    """Calculate center of mass of peaks weighted by their values"""
+    if len(peaks_x) == 0:
+        return None, None, None
+    
+    total_weight = np.sum(peak_values)
+    if total_weight == 0:
+        return None, None, None
+    
+    com_x = np.sum(peaks_x * peak_values) / total_weight
+    com_y = np.sum(peaks_y * peak_values) / total_weight
+    com_z = np.sum(peaks_z * peak_values) / total_weight
+    
+    return com_x, com_y, com_z
+
+
 def extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx):
     vz, vy, vx = voxel_results['voxel_size']
     nz, ny, nx = tomo_data.shape
@@ -139,6 +457,8 @@ def compute_fft(region, use_vignette=False):
     fft_3d = np.fft.fftn(region_to_fft)
     fft_3d_shifted = np.fft.fftshift(fft_3d)
     magnitude = np.abs(fft_3d_shifted)
+    phase = np.angle(fft_3d_shifted)
+    
     
     kz = np.fft.fftshift(np.fft.fftfreq(region.shape[0]))
     ky = np.fft.fftshift(np.fft.fftfreq(region.shape[1]))
@@ -147,6 +467,50 @@ def compute_fft(region, use_vignette=False):
     KZ, KY, KX = np.meshgrid(kz, ky, kx, indexing='ij')
     
     return magnitude, KX, KY, KZ
+    #return phase, KX, KY, KZ
+
+
+def compute_fft_q(region, use_vignette=False, pixel_size=1.0):
+    """
+    Compute 3D FFT and return magnitude and q-vectors in reciprocal space
+    
+    Args:
+        region: 3D numpy array of real space data
+        use_vignette: Boolean to apply vignette filter
+        pixel_size: Real space pixel size in nanometers
+    
+    Returns:
+        magnitude: FFT magnitude
+        QX, QY, QZ: Q-vectors in reciprocal space (Å⁻¹)
+    """
+    if use_vignette:
+        vignette = create_3d_vignette(region.shape)
+        region_to_fft = region * vignette
+    else:
+        region_to_fft = region
+    
+    fft_3d = np.fft.fftn(region_to_fft)
+    fft_3d_shifted = np.fft.fftshift(fft_3d)
+    magnitude = np.abs(fft_3d_shifted)
+    
+    # Calculate reciprocal space frequencies
+    kz = np.fft.fftshift(np.fft.fftfreq(region.shape[0]))
+    ky = np.fft.fftshift(np.fft.fftfreq(region.shape[1]))
+    kx = np.fft.fftshift(np.fft.fftfreq(region.shape[2]))
+    
+    # Convert to q-space (Å⁻¹)
+    # q = 4π*sin(θ)/λ = 2π/d, where d is real space distance
+    # For small angles: q ≈ 2π*θ/λ
+    pixel_size_A = pixel_size  # Convert nm to Å
+    qz = 2 * np.pi * kz / (pixel_size_A)
+    qy = 2 * np.pi * ky / (pixel_size_A)
+    qx = 2 * np.pi * kx / (pixel_size_A)
+    #print('Q pixel size of FFT:', qx[1]-qx[0], qy[1]-qy[0], qz[1]-qz[0])
+    
+    QZ, QY, QX = np.meshgrid(qz, qy, qx, indexing='ij')
+    
+    return magnitude, QX, QY, QZ
+
 
 def create_3d_fft_plot(magnitude, KX, KY, KZ, fft_threshold):
     max_magnitude = np.max(magnitude)
@@ -935,20 +1299,10 @@ def initialize_combined_figure(nrows):
 # Load the data
 #tomogram = "/net/micdata/data2/12IDC/2024_Dec/misc/JM02_3D/ROI2_Ndp512_MLc_p10_gInf_Iter1000/recons/tomogram_alignment_recon_cropped_14nm_2.tif"
 tomogram = "/net/micdata/data2/12IDC//2021_Nov/results/tomography/Sample6_tomo6_SIRT_tomogram.tif"
-tomo_data = tifffile.imread(tomogram)
+tomo_data = tifffile.imread(tomogram).swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
 
 #Rotate the tomogram
-axis='y'
-angle=0
-if axis == 'x':
-    rotated_data = rotate(tomo_data, angle, axes=(1, 2), reshape=False)
-elif axis == 'y':
-    rotated_data = rotate(tomo_data, angle, axes=(0, 2), reshape=False)
-elif axis == 'z':
-    rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
-tomo_data = rotated_data
-
-axis='x'
+axis='z'
 angle=0
 if axis == 'x':
     rotated_data = rotate(tomo_data, angle, axes=(1, 2), reshape=False)
@@ -963,7 +1317,96 @@ fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.8)
 fig.show()
 # Print dimensions
 print(f"Tomogram shape: {tomo_data.shape}")
-voxel_size = (10*8//6,10*8//6,10*8//6)  # Reduced from (32, 32, 32)
+
+#magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
+magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=18)
+   
+
+# Define a threshold for the magnitude
+threshold = 0.01 * np.max(magnitude)  # Example: 10% of the max magnitude
+
+# Flatten the arrays
+kx_flat = KX.flatten()
+ky_flat = KY.flatten()
+kz_flat = KZ.flatten()
+magnitude_flat = magnitude.flatten()
+
+# Apply the threshold
+mask = magnitude_flat > threshold
+kx_filtered = kx_flat[mask]
+ky_filtered = ky_flat[mask]
+kz_filtered = kz_flat[mask]
+magnitude_filtered = magnitude_flat[mask]
+
+
+# Create a 3D scatter plot of the FFT magnitude
+fig_fft = go.Figure(data=go.Scatter3d(
+    x=kx_filtered,
+    y=ky_filtered,
+    z=kz_filtered,
+    mode='markers',
+    marker=dict(
+        size=10,
+        color=magnitude_filtered,
+        colorscale='Viridis',
+        opacity=0.8,
+        colorbar=dict(title='Magnitude')
+    )
+))
+
+
+# Load and plot cell info
+cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo.mat")
+h=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
+k=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
+l=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+vs=[]
+
+for i,h in enumerate(h):
+    v=h*cellinfo_data['recilatticevectors'][0]+k[i]*cellinfo_data['recilatticevectors'][1]+l[i]*cellinfo_data['recilatticevectors'][2]
+    vs.append(v)
+    
+vs=np.array(vs)
+fig_fft.add_trace(go.Scatter3d(
+    x=vs.T[0],
+    y=vs.T[1],
+    z=vs.T[2],
+    mode='markers',
+    marker=dict(size=10, color='red', opacity=0.8),
+    name='Cell Info'
+))
+
+
+fig_fft.update_layout(
+    title="3D FFT Magnitude with Threshold",
+    scene=dict(
+        xaxis_title="KX",
+        yaxis_title="KY",
+        zaxis_title="KZ",
+        aspectmode='cube'
+    ),
+    width=800, height=800
+)
+
+fig_fft.show()
+
+
+
+
+# Voxel size
+# Cindy: pixel size is ~18nm
+# Tomogram.shape = (179,185,162) -> (z,y,x)
+pixel_size=18 #nm
+limiting_axes=np.min(tomo_data.shape) #pixels
+tomo_nm_size=pixel_size*limiting_axes #nm
+n_unit_cells=tomo_nm_size//(cellinfo_data['Vol'][0][0]**(1/3)) #n unit cells / tomogram
+
+print(f'~n unit cells per tomogram: {n_unit_cells}')
+
+voxel_size = (20,20,20)  # cubic voxel size, pixels
+
+print(f'~m unit cells per voxel: {n_unit_cells*voxel_size[0]/limiting_axes}')
+
 voxel_results = analyze_tomogram_voxels(tomo_data, voxel_size=voxel_size)
 
 # Print number of voxels in each dimension
@@ -971,29 +1414,546 @@ print(f"Number of voxels (z, y, x): {voxel_results['n_voxels']}")
 
 show_plots = False
 
+# Define a threshold for the magnitude
+threshold = 0.05 # Example: 5% of the max magnitude
+
+# Peak finding threshold and sigma
+peak_threshold=4e-2
+sigma=.5
+
+
+
+
+
+#%%
+# Test case with visualization
+def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h, k, l, visualize=True):
+    """
+    Test and visualize all three steps:
+    1. Original peaks
+    2. After (110) alignment
+    3. After rotation around (110)
+    """
+    # Get voxel FFT peaks and setup (same as before)
+    magnitude, KX, KY, KZ = compute_fft_q(voxel_data, use_vignette=True, pixel_size=18)
+    voxel_peaks, voxel_values = find_peaks_3d_cutoff(magnitude, 
+                                                    threshold=0.1,
+                                                    sigma=0.5, 
+                                                    center_cutoff_radius=3)
+    voxel_peaks_q = np.array([
+        KX[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]],
+        KY[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]],
+        KZ[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]]
+    ]).T
+
+    
+    # Get (110) direction and first rotation (same as before)
+    crystal_110_idx = np.where((h == 1) & (k == 1) & (l == 0))[0][0]
+    v2 = crystal_peaks[crystal_110_idx]
+    v2_norm = v2 / np.linalg.norm(v2)
+    
+    strongest_idx = np.argmax(voxel_values)
+    v1 = voxel_peaks_q[strongest_idx]
+    v1_norm = v1 / np.linalg.norm(v1)
+    
+    # First rotation
+    rot_axis1 = np.cross(v1_norm, v2_norm)
+    if np.all(rot_axis1 == 0):
+        R1 = Rotation.from_rotvec([0, 0, 0])
+    else:
+        rot_axis1 = rot_axis1 / np.linalg.norm(rot_axis1)
+        cos_angle = np.dot(v1_norm, v2_norm)
+        initial_angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
+        R1 = Rotation.from_rotvec(rot_axis1 * initial_angle)
+    
+    # Apply first rotation
+    aligned_peaks = R1.apply(voxel_peaks_q)
+    
+    # Second rotation around (110)
+    best_angle = 0
+    best_rmsd = float('inf')
+    final_rotated = None
+    
+    for angle in np.arange(0, 360, 1):
+        R2 = Rotation.from_rotvec(v2_norm * np.deg2rad(angle))
+        rotated = R2.apply(aligned_peaks)
+        
+        total_rmsd = 0
+        for rot_peak in rotated:
+            dists = np.linalg.norm(crystal_peaks - rot_peak, axis=1)
+            total_rmsd += np.min(dists)**2
+        rmsd = np.sqrt(total_rmsd / len(rotated))
+        
+        if rmsd < best_rmsd:
+            best_rmsd = rmsd
+            best_angle = angle
+            final_rotated = rotated
+    
+    if visualize:
+        # Create three subplots
+        fig = make_subplots(rows=1, cols=3, 
+                           subplot_titles=('Original Peaks', 
+                                        'After (110) Alignment',
+                                        f'After {best_angle:.1f}° Rotation'),
+                           specs=[[{'type': 'scene'}, {'type': 'scene'}, {'type': 'scene'}]])
+        
+        # Plot settings
+        scale = 0.15
+        sizes = 5 + (voxel_values - voxel_values.min()) / (voxel_values.max() - voxel_values.min()) * 15
+        
+        # Plot 1: Original peaks (same as before)
+        fig.add_trace(
+            go.Scatter3d(x=crystal_peaks[:,0], y=crystal_peaks[:,1], z=crystal_peaks[:,2],
+                         mode='markers', marker=dict(size=8, color='blue', opacity=0.1),
+                         name='Crystal Structure'), row=1, col=1)
+        
+        fig.add_trace(
+            go.Scatter3d(x=voxel_peaks_q[:,0], y=voxel_peaks_q[:,1], z=voxel_peaks_q[:,2],
+                         mode='markers', marker=dict(size=sizes, color='red', opacity=0.6),
+                         name='Original Voxel Peaks'), row=1, col=1)
+        
+        # Plot 2: After (110) alignment (same as before)
+        fig.add_trace(
+            go.Scatter3d(x=crystal_peaks[:,0], y=crystal_peaks[:,1], z=crystal_peaks[:,2],
+                         mode='markers', marker=dict(size=8, color='blue', opacity=0.1),
+                         showlegend=False), row=1, col=2)
+        
+        fig.add_trace(
+            go.Scatter3d(x=aligned_peaks[:,0], y=aligned_peaks[:,1], z=aligned_peaks[:,2],
+                         mode='markers', marker=dict(size=sizes, color='orange', opacity=0.6),
+                         name='(110) Aligned Peaks'), row=1, col=2)
+        
+        # Plot 3: After rotation around (110)
+        fig.add_trace(
+            go.Scatter3d(x=crystal_peaks[:,0], y=crystal_peaks[:,1], z=crystal_peaks[:,2],
+                         mode='markers', marker=dict(size=8, color='blue', opacity=0.1),
+                         showlegend=False), row=1, col=3)
+        
+        fig.add_trace(
+            go.Scatter3d(x=final_rotated[:,0], y=final_rotated[:,1], z=final_rotated[:,2],
+                         mode='markers', marker=dict(size=sizes, color='green', opacity=0.6),
+                         name='Final Aligned Peaks'), row=1, col=3)
+        
+        # Add (110) axis to all plots
+        for col in [1, 2, 3]:
+            fig.add_trace(
+                go.Scatter3d(x=[0, v2_norm[0] * scale], y=[0, v2_norm[1] * scale], z=[0, v2_norm[2] * scale],
+                            mode='lines', line=dict(color='yellow', width=5),
+                            name='(110) Axis' if col==1 else None,
+                            showlegend=col==1), row=1, col=col)
+        
+        # Highlight strongest peak in all plots
+        fig.add_trace(
+            go.Scatter3d(x=[voxel_peaks_q[strongest_idx,0]], y=[voxel_peaks_q[strongest_idx,1]], 
+                         z=[voxel_peaks_q[strongest_idx,2]], mode='markers',
+                         marker=dict(size=15, color='purple', symbol='diamond'),
+                         name='Strongest Peak'), row=1, col=1)
+        
+        fig.add_trace(
+            go.Scatter3d(x=[aligned_peaks[strongest_idx,0]], y=[aligned_peaks[strongest_idx,1]], 
+                         z=[aligned_peaks[strongest_idx,2]], mode='markers',
+                         marker=dict(size=15, color='purple', symbol='diamond'),
+                         showlegend=False), row=1, col=2)
+        
+        fig.add_trace(
+            go.Scatter3d(x=[final_rotated[strongest_idx,0]], y=[final_rotated[strongest_idx,1]], 
+                         z=[final_rotated[strongest_idx,2]], mode='markers',
+                         marker=dict(size=15, color='purple', symbol='diamond'),
+                         showlegend=False), row=1, col=3)
+        
+        fig.update_layout(
+            title=f"Peak Alignment Steps (Voxel {z_idx},{y_idx},{x_idx})<br>RMSD: {best_rmsd:.3e} nm⁻¹",
+            scene1=dict(aspectmode='cube'),
+            scene2=dict(aspectmode='cube'),
+            scene3=dict(aspectmode='cube'),
+            width=1800
+        )
+        
+          
+        return fig, best_angle, best_rmsd
+    else:
+        return None, best_angle, best_rmsd
+#%%
+# Run test
+# Load and plot cell info
+cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo.mat")
+hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
+ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
+ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+vs=[]
+
+for i,h in enumerate(hs):
+    v=hs[i]*cellinfo_data['recilatticevectors'][0]+ks[i]*cellinfo_data['recilatticevectors'][1]+ls[i]*cellinfo_data['recilatticevectors'][2]
+    vs.append(v)
+    
+crystal_peaks = np.array(vs)  # Your existing vs array from cellinfo
+z_idx, y_idx, x_idx =2,4,4
+voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, 0.8)
+fig.show()
+
+fig, angle, rmsd = test_orientation_analysis(rotate(voxel_data, 0, axes=(1,2), reshape=False), 
+                                          crystal_peaks, z_idx, y_idx, x_idx, hs, ks, ls,visualize=True)
+print(f"\nResults:")
+print(f"Rotation angle around (110): {angle:.1f}°")
+print(f"Final RMSD: {rmsd:.3e} nm⁻¹")
+
+# Calculate angles between reciprocal lattice vectors
+a_star = cellinfo_data['recilatticevectors'][0]
+b_star = cellinfo_data['recilatticevectors'][1] 
+c_star = cellinfo_data['recilatticevectors'][2]
+
+# Calculate magnitudes
+a_mag = np.linalg.norm(a_star)
+b_mag = np.linalg.norm(b_star)
+c_mag = np.linalg.norm(c_star)
+
+# Calculate angles (in degrees)
+ab_angle = np.arccos(np.dot(a_star, b_star)/(a_mag * b_mag)) * 180/np.pi
+bc_angle = np.arccos(np.dot(b_star, c_star)/(b_mag * c_mag)) * 180/np.pi
+ac_angle = np.arccos(np.dot(a_star, c_star)/(a_mag * c_mag)) * 180/np.pi
+
+print("\nReciprocal Lattice Vector Magnitudes:")
+print(f"||a*|| = {a_mag:.3f} nm⁻¹")
+print(f"||b*|| = {b_mag:.3f} nm⁻¹")
+print(f"||c*|| = {c_mag:.3f} nm⁻¹")
+
+print("\nAngles between Reciprocal Lattice Vectors:")
+print(f"a*^b* = {ab_angle:.1f}°")
+print(f"b*^c* = {bc_angle:.1f}°")
+print(f"a*^c* = {ac_angle:.1f}°")
+
+# Plot reciprocal lattice vectors
+scale = 1  # Scale factor for better visualization
+fig.add_trace(go.Scatter3d(
+    x=[0, a_star[0] * scale],
+    y=[0, a_star[1] * scale],
+    z=[0, a_star[2] * scale],
+    mode='lines+text',
+    line=dict(color='red', width=5),
+    text=['', 'a*'],
+    name='a* vector'
+))
+
+fig.add_trace(go.Scatter3d(
+    x=[0, b_star[0] * scale],
+    y=[0, b_star[1] * scale],
+    z=[0, b_star[2] * scale],
+    mode='lines+text',
+    line=dict(color='green', width=5),
+    text=['', 'b*'],
+    name='b* vector'
+))
+
+fig.add_trace(go.Scatter3d(
+    x=[0, c_star[0] * scale],
+    y=[0, c_star[1] * scale],
+    z=[0, c_star[2] * scale],
+    mode='lines+text',
+    line=dict(color='blue', width=5),
+    text=['', 'c*'],
+    name='c* vector'
+))
+
+fig.show()
+
 
 
 
 
 #%%
 
+def visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
+                                     z_idx, y_idx, x_idx):
+    """
+    Analyze orientation for a single voxel and overlay on tomogram
+    Parameters:
+        z_idx, y_idx, x_idx: indices of the voxel to analyze
+    """
+    # Analyze single voxel
+    voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+    _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
+                                             z_idx, y_idx, x_idx, 
+                                             h, k, l,
+                                             visualize=False)
+    
+    # Create coordinate arrays for full tomogram
+    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
+                         np.arange(tomo_data.shape[1]), 
+                         np.arange(tomo_data.shape[2]), 
+                         indexing='ij')
+    
+    # Apply threshold to full tomogram
+    full_max = tomo_data.max()
+    full_threshold = full_max * 0.8
+    full_mask = tomo_data > full_threshold
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add full tomogram points with low opacity
+    fig.add_trace(go.Scatter3d(
+        x=X[full_mask],
+        y=Y[full_mask],
+        z=Z[full_mask],
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='gray',
+            opacity=0.1
+        ),
+        name='Background',
+        showlegend=False
+    ))
+    
+    # Add analyzed voxel
+    vz, vy, vx = voxel_results['voxel_size']
+    z_start, z_end = z_idx*vz, (z_idx+1)*vz
+    y_start, y_end = y_idx*vy, (y_idx+1)*vy
+    x_start, x_end = x_idx*vx, (x_idx+1)*vx
+    
+    # Extract voxel region directly using array indexing
+    voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
+    voxel_mask = voxel_region > full_threshold
+    
+    # Create coordinate arrays for the voxel
+    z_coords, y_coords, x_coords = np.where(voxel_mask)
+    
+    # Adjust coordinates to global position
+    z_coords += z_start
+    y_coords += y_start
+    x_coords += x_start
+    
+    if len(z_coords) > 0:
+        # Create cyclic colorscale over 120 degrees
+        cyclic_angle = angle % 120  # Make angle cyclic over 120 degrees
+        normalized_angle = cyclic_angle / 120  # Normalize to [0,1]
+        
+        # Custom colorscale that's continuous from start to end
+        colors = [
+            [0, 'rgb(68,1,84)'],       # Viridis start
+            [0.25, 'rgb(59,82,139)'],
+            [0.5, 'rgb(33,144,141)'],
+            [0.75, 'rgb(94,201,98)'],
+            [1, 'rgb(68,1,84)']        # Back to start for continuity
+        ]
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords,
+            y=y_coords,
+            z=z_coords,
+            mode='markers',
+            marker=dict(
+                size=3,
+                color=[normalized_angle] * len(z_coords),  # Same angle for all points
+                colorscale=colors,
+                opacity=0.3,
+                colorbar=dict(
+                    title='Orientation Angle (°)',
+                    tickmode='array',
+                    ticktext=['0°', '30°', '60°', '90°', '120°'],
+                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
+                )
+            ),
+            name=f'Voxel ({z_idx},{y_idx},{x_idx})',
+            showlegend=False
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=f"Orientation = {angle:.1f}°, RMSD = {rmsd:.2e}",
+            y=0.95
+        ),
+        scene=dict(
+            aspectmode='data',
+            camera=dict(eye=dict(x=2, y=2, z=2)),
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        width=1000, height=800,
+        showlegend=True
+    )
+    
+    return fig
+
+
+def visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
+                             z_idx, y_range, x_idx):
+    """
+    Analyze orientation for a line of voxels along y-axis
+    Parameters:
+        z_idx, x_idx: fixed indices for z and x
+        y_range: range of y indices to analyze
+    """
+    # Create coordinate arrays for full tomogram
+    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
+                         np.arange(tomo_data.shape[1]), 
+                         np.arange(tomo_data.shape[2]), 
+                         indexing='ij')
+    
+    # Apply threshold to full tomogram
+    full_max = tomo_data.max()
+    full_threshold = full_max * 0.7
+    full_mask = tomo_data > full_threshold
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add full tomogram points with low opacity
+    fig.add_trace(go.Scatter3d(
+        x=X[full_mask],
+        y=Y[full_mask],
+        z=Z[full_mask],
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='gray',
+            opacity=0.1
+        ),
+        name='Background',
+        showlegend=False
+    ))
+    
+    # Process each voxel in the y-range
+    vz, vy, vx = voxel_results['voxel_size']
+    all_angles = []
+    all_coords = []
+    
+    for y_idx in y_range:
+        # Extract and analyze voxel
+        voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+        try:
+            _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
+                                                     z_idx, y_idx, x_idx, 
+                                                     h, k, l,
+                                                     visualize=False)
+            
+            # Get voxel coordinates
+            z_start, z_end = z_idx*vz, (z_idx+1)*vz
+            y_start, y_end = y_idx*vy, (y_idx+1)*vy
+            x_start, x_end = x_idx*vx, (x_idx+1)*vx
+            
+            voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
+            voxel_mask = voxel_region > full_threshold
+            
+            z_coords, y_coords, x_coords = np.where(voxel_mask)
+            
+            # Adjust coordinates to global position
+            z_coords += z_start
+            y_coords += y_start
+            x_coords += x_start
+            
+            # Store results
+            cyclic_angle = angle % 120
+            normalized_angle = cyclic_angle / 120
+            
+            all_angles.extend([normalized_angle] * len(z_coords))
+            all_coords.extend(zip(x_coords, y_coords, z_coords))
+            
+        except Exception as e:
+            print(f"Error processing voxel (z={z_idx},y={y_idx},x={x_idx}): {e}")
+            continue
+    
+    if all_coords:
+        # Convert coordinates to arrays
+        x_coords, y_coords, z_coords = zip(*all_coords)
+        
+        # Custom colorscale
+        colors = [
+            [0, 'rgb(68,1,84)'],
+            [0.25, 'rgb(59,82,139)'],
+            [0.5, 'rgb(33,144,141)'],
+            [0.75, 'rgb(94,201,98)'],
+            [1, 'rgb(68,1,84)']
+        ]
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords,
+            y=y_coords,
+            z=z_coords,
+            mode='markers',
+            marker=dict(
+                size=3,
+                color=all_angles,
+                colorscale=colors,
+                opacity=0.3,
+                colorbar=dict(
+                    title='Orientation Angle (°)',
+                    tickmode='array',
+                    ticktext=['0°', '30°', '60°', '90°', '120°'],
+                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
+                )
+            ),
+            name='Analyzed Voxels',
+            showlegend=False
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=f"Orientation Analysis Along Y-axis (z={z_idx}, y={y_range[0]}-{y_range[-1]}, x={x_idx})",
+            y=0.95
+        ),
+        scene=dict(
+            aspectmode='data',
+            camera=dict(eye=dict(x=2, y=2, z=2)),
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        width=1000, height=800,
+        showlegend=True
+    )
+    
+    return fig
+
+
+
+# Example usage:
+z_idx, y_idx, x_idx = 2, 1, 4  # Example voxel coordinates
+fig = visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, 
+                                       hs, ks, ls, z_idx, y_idx, x_idx)
+fig.show()
+
+
+
+
+
+# Example usage:
+z_idx = 2
+x_idx = 4
+y_range = np.arange(0, 9)  # Analyze voxels y=1 through y=4
+fig = visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, 
+                               hs, ks, ls, z_idx, y_range, x_idx)
+fig.show()
+
+
+
+
+
+
+
+
+
+
+#%%
 '''
-TEST FOR SINGLE VOXEL
+TEST PEAK ANALYSISFOR SINGLE VOXEL
 '''
 vz, vy, vx = voxel_results['voxel_size']
 figE = go.Figure()
 
 # Process only the first voxel
-z_idx, y_idx, x_idx = 5, 7, 5
-intensity_threshold = 0.8
+z_idx, y_idx, x_idx = voxel_results['n_voxels'][0]//2, voxel_results['n_voxels'][1]//2, voxel_results['n_voxels'][2]//2
+intensity_threshold_tomo = 0.5
 
 # Compute orientation tensor and eigenvalues/eigenvectors
 region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold)
+magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True, pixel_size=18)
+fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold_tomo)
 fig.show()
-# Define a threshold for the magnitude
-threshold = 0.02*4 * np.max(magnitude)  # Example: 10% of the max magnitude
 
 # Flatten the arrays
 kx_flat = KX.flatten()
@@ -1002,22 +1962,26 @@ kz_flat = KZ.flatten()
 magnitude_flat = magnitude.flatten()
 
 # Apply the threshold
-mask = magnitude_flat > threshold
+mask = magnitude_flat > threshold*np.max(magnitude)
 kx_filtered = kx_flat[mask]
 ky_filtered = ky_flat[mask]
 kz_filtered = kz_flat[mask]
 magnitude_filtered = magnitude_flat[mask]
 
-
 #Find peaks in 3D
-#peak_positions, peak_values = find_peaks_3d(magnitude,threshold = 1e-9 * np.max(magnitude) ,sigma=0.5)
-peak_positions, peak_values = find_peaks_3d(magnitude,threshold = 0.04 ,sigma=0.5)
+peak_positions, peak_values = find_peaks_3d_cutoff(magnitude,threshold = peak_threshold ,sigma=sigma, center_cutoff_radius=3)
+voxel_peaks,voxel_values=peak_positions,peak_values
 
 for pos, val in zip(peak_positions, peak_values):
     print(f"Peak at position {pos} with value {val}")
 
+# Extract peak coordinates
+voxel_peak_kx = KX[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]]
+voxel_peak_ky = KY[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]]
+voxel_peak_kz = KZ[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]]
+
 # Create a 3D scatter plot of the FFT magnitude
-fig_fft = go.Figure(data=go.Scatter3d(
+fig_fft_ex = go.Figure(data=go.Scatter3d(
     x=kx_filtered,
     y=ky_filtered,
     z=kz_filtered,
@@ -1031,7 +1995,7 @@ fig_fft = go.Figure(data=go.Scatter3d(
     )
 ))
 
-fig_fft.update_layout(
+fig_fft_ex.update_layout(
     title="3D FFT Magnitude with Threshold",
     scene=dict(
         xaxis_title="KX",
@@ -1041,95 +2005,6 @@ fig_fft.update_layout(
     ),
     width=800, height=800
 )
-
-fig_fft.show()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#%%
-
-'''
-TEST PEAK ANALYSISFOR multiple voxels
-'''
-vz, vy, vx = voxel_results['voxel_size']
-figE = go.Figure()
-
-# Process only the first voxel
-z_idx, y_idx, x_idx = 5, 7, 5
-intensity_threshold = 0.8
-
-# Compute orientation tensor and eigenvalues/eigenvectors
-region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold)
-fig.show()
-# Define a threshold for the magnitude
-threshold = 0.02*4 * np.max(magnitude)  # Example: 10% of the max magnitude
-
-# Flatten the arrays
-kx_flat = KX.flatten()
-ky_flat = KY.flatten()
-kz_flat = KZ.flatten()
-magnitude_flat = magnitude.flatten()
-
-# Apply the threshold
-mask = magnitude_flat > threshold
-kx_filtered = kx_flat[mask]
-ky_filtered = ky_flat[mask]
-kz_filtered = kz_flat[mask]
-magnitude_filtered = magnitude_flat[mask]
-
-
-#Find peaks in 3D
-peak_positions, peak_values = find_peaks_3d(magnitude,threshold = 1e-9 * np.max(magnitude) ,sigma=0.5)
-peak_positions, peak_values = find_peaks_3d(magnitude,threshold = 0.04 ,sigma=0.5)
-
-for pos, val in zip(peak_positions, peak_values):
-    print(f"Peak at position {pos} with value {val}")
-
-# Create a 3D scatter plot of the FFT magnitude
-fig_fft = go.Figure(data=go.Scatter3d(
-    x=kx_filtered,
-    y=ky_filtered,
-    z=kz_filtered,
-    mode='markers',
-    marker=dict(
-        size=10,
-        color=magnitude_filtered,
-        colorscale='Viridis',
-        opacity=0.8,
-        colorbar=dict(title='Magnitude')
-    )
-))
-
-fig_fft.update_layout(
-    title="3D FFT Magnitude with Threshold",
-    scene=dict(
-        xaxis_title="KX",
-        yaxis_title="KY",
-        zaxis_title="KZ",
-        aspectmode='cube'
-    ),
-    width=800, height=800
-)
-
-fig_fft.show()
-
 
 # Assuming peak_positions and peak_values are already obtained
 peak_kx = KX[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
@@ -1137,7 +2012,7 @@ peak_ky = KY[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
 peak_kz = KZ[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
 
 # Create a 3D scatter plot of the peaks
-fig_peaks = go.Figure(data=go.Scatter3d(
+fig_peaks_ex = go.Figure(data=go.Scatter3d(
     x=peak_kx,
     y=peak_ky,
     z=peak_kz,
@@ -1152,7 +2027,17 @@ fig_peaks = go.Figure(data=go.Scatter3d(
     )
 ))
 
-fig_peaks.update_layout(
+fig_peaks_ex.add_trace(go.Scatter3d(
+    x=crystal_peaks.T[0],
+    y=crystal_peaks.T[1],
+    z=crystal_peaks.T[2],
+    mode='markers',
+    marker=dict(size=5, color='red', opacity=0.5),
+    name='Cell Info'
+))
+
+
+fig_peaks_ex.update_layout(
     title="3D FFT Peaks",
     scene=dict(
         xaxis_title="KX",
@@ -1163,7 +2048,20 @@ fig_peaks.update_layout(
     width=800, height=800
 )
 
-fig_peaks.show()
+fig_peaks_ex.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1174,8 +2072,22 @@ fig_peaks.show()
 
 
 #%%
+'''
+VISUALIZING TOMOGRAM WITH RECIPROCAL SPACE PEAKS FOR MULTIPLE VOXELS
+'''
+# Calculate maximum magnitudes for each voxel for normalization
+z_indices_all = range(0,10)
+all_magnitudes = []
+for plot_idx, z_idx in enumerate(z_indices_all):
+    region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+    magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True, pixel_size=18)
+    all_magnitudes.append(np.max(magnitude))
+
 # Define the range of z indices to analyze
-z_indices = range(3,7)# Example range along the z-axis
+# Plots can only handle so many subplots, have to break up for memory sake
+
+#z_indices = z_indices_all[:len(z_indices_all)//2]# Example range along the z-axis
+z_indices = z_indices_all[len(z_indices_all)//2:]# Example range along the z-axis
 
 # Store peak data for each voxel
 voxel_peaks = {}
@@ -1183,27 +2095,30 @@ voxel_peaks = {}
 # Intialize combined figure
 fig_combined=initialize_combined_figure(len(z_indices))
 
+    
 for plot_idx, z_idx in enumerate(z_indices):
     # Extract the voxel region
     region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-    magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-    fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold)
+    magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True,pixel_size=18)
+    fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold_tomo)
     fig_combined.add_trace(fig.data[0], row=plot_idx+1, col=1)
     fig_combined.add_trace(fig.data[1], row=plot_idx+1, col=1)
     fig_combined.add_trace(fig.data[2], row=plot_idx+1, col=1)
+        
     # Find peaks in the 3D FFT magnitude
-    peak_positions, peak_values = find_peaks_3d(magnitude, threshold=0.04, sigma=0.5)
+    peak_positions, peak_values = find_peaks_3d(magnitude, threshold=peak_threshold, sigma=sigma)
     
     # Extract peak coordinates
-    peak_kx = KX[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
-    peak_ky = KY[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
-    peak_kz = KZ[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]
+    peak_kx = KX[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]# + x_idx
+    peak_ky = KY[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]# + y_idx
+    peak_kz = KZ[peak_positions[:, 0], peak_positions[:, 1], peak_positions[:, 2]]# + z_idx
     
     # Store peaks for this voxel
     voxel_peaks[z_idx] = {
         'positions': np.column_stack((peak_kx, peak_ky, peak_kz)),
         'values': peak_values
     }
+    
     # Create a 3D scatter plot of the peaks
     fig_peaks = go.Figure(data=go.Scatter3d(
         x=peak_kx,
@@ -1211,16 +2126,50 @@ for plot_idx, z_idx in enumerate(z_indices):
         z=peak_kz,
         mode='markers',
         marker=dict(
-            size=10,
+            size=5,
             color=peak_values,
             colorscale='Plasma',
-            opacity=0.8,
+            opacity=np.max(peak_values)/np.max(all_magnitudes),
             colorbar=dict(title='Peak Magnitude'),
             showscale=False
             )
         )
     )
     fig_combined.add_trace(fig_peaks.data[0], row=plot_idx+1, col=2)
+
+
+    # Create a 3D scatter plot of the FFT magnitude
+
+    # Flatten the arrays
+    kx_flat = KX.flatten()
+    ky_flat = KY.flatten()
+    kz_flat = KZ.flatten()
+    magnitude_flat = magnitude.flatten()
+
+    # Apply the threshold
+    mask = magnitude_flat > threshold*np.max(all_magnitudes)
+    kx_filtered = kx_flat[mask]
+    ky_filtered = ky_flat[mask]
+    kz_filtered = kz_flat[mask]
+    magnitude_filtered = magnitude_flat[mask]
+
+    # Create a 3D scatter plot of the FFT magnitude
+    fig_fft = go.Figure(data=go.Scatter3d(
+        x=kx_filtered,
+        y=ky_filtered,
+        z=kz_filtered,
+        mode='markers',
+        marker=dict(
+            size=2,
+            color=magnitude_filtered,
+            colorscale='Viridis',
+            opacity=0.3,
+            showscale=False
+            #colorbar=dict(title='Magnitude')
+        )
+    ))
+    fig_combined.add_trace(fig_fft.data[0], row=plot_idx+1, col=2)
+
 
 # Compare peaks between neighboring voxels
 for z_idx in z_indices[:-1]:
@@ -1257,168 +2206,170 @@ fig_combined.show()
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #%%
-orientation_tensor = compute_orientation_tensor(magnitude, KX, KY, KZ)
-epsilon = 1e-8
-orientation_tensor += np.eye(3) * epsilon
-eigenvalues, eigenvectors = np.linalg.eigh(orientation_tensor)
 
-# Scale eigenvectors by eigenvalues for arrow lengths
-axes_lengths = np.sqrt(eigenvalues)
-
-# Normalize axes_lengths for better visualization
-max_length = np.max(axes_lengths)
-if max_length > 0:
-    axes_lengths = axes_lengths / max_length
+'''
+Plot FFT peaks for all voxels in the tomogram
+'''
+fig_RS = go.Figure()
+voxel_results['n_voxels'][0]
+# Define the range for all dimensions
+z_indices = range(3, voxel_results['n_voxels'][0]-5)  # Adjust range as needed
+y_indices = range(3, voxel_results['n_voxels'][1]-5)  # Adjust range as needed
+x_indices = range(3, voxel_results['n_voxels'][2]-5)  # Adjust range as needed
 
 
-# Use the center of the frequency domain for the voxel
-kx_center = 0#KX.mean()
-ky_center = 0#KY.mean()
-kz_center = 0#KZ.mean()
 
-# Add arrows to plot in Fourier space
-for i in range(3):
-    figE.add_trace(go.Cone(
-        x=[kx_center], y=[ky_center], z=[kz_center],
-        u=[eigenvectors[0, i] * axes_lengths[i]], 
-        v=[eigenvectors[1, i] * axes_lengths[i]], 
-        w=[eigenvectors[2, i] * axes_lengths[i]],
-        sizemode="absolute",
-        sizeref=0,  # Adjust this value as needed
-        anchor="tail",
-        colorscale='Viridis',
-        showscale=False
-    ))
+# First pass to find maximum peak value across all voxels
+max_peak_value = 0
+for z_idx in tqdm(z_indices):
+    for y_idx in y_indices:
+        for x_idx in x_indices:
+            region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+            magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True,pixel_size=18)
+            peak_positions, peak_values = find_peaks_3d(magnitude, threshold=peak_threshold, sigma=sigma)
+            
+            if len(peak_values) > 0:
+                # Filter out central peaks
+                non_central_peaks = []
+                for i, pos in enumerate(peak_positions):
+                    peak_kx = KX[pos[0], pos[1], pos[2]]
+                    peak_ky = KY[pos[0], pos[1], pos[2]]
+                    peak_kz = KZ[pos[0], pos[1], pos[2]]
+                    
+                    # Check if peak is not at center (allowing for small numerical errors)
+                    if not (abs(peak_kx) < 0.02 and abs(peak_ky) < 0.02 and abs(peak_kz) < 0.02):
+                        non_central_peaks.append(i)
+                
+                if non_central_peaks:  # If there are non-central peaks
+                    max_peak_value = max(max_peak_value, np.max(peak_values[non_central_peaks]))
 
-figE.update_layout(
-    title="Orientation Vectors in Fourier Space for First Voxel",
+# Second pass to plot peaks
+for z_idx in tqdm(z_indices):
+    for y_idx in y_indices:
+        for x_idx in x_indices:
+            # Extract the voxel region
+            region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+            magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True,pixel_size=18)
+            
+            # Find peaks in the 3D FFT magnitude
+            peak_threshold = 0.2
+            peak_positions, peak_values = find_peaks_3d(magnitude, threshold=peak_threshold, sigma=0.5)
+            
+            if len(peak_positions) > 0:  # Only add traces if peaks were found
+                for i in range(len(peak_positions)):
+                    # Extract single peak coordinates
+                    peak_kx = KX[peak_positions[i, 0], peak_positions[i, 1], peak_positions[i, 2]]
+                    peak_ky = KY[peak_positions[i, 0], peak_positions[i, 1], peak_positions[i, 2]]
+                    peak_kz = KZ[peak_positions[i, 0], peak_positions[i, 1], peak_positions[i, 2]]
+                    
+                    # Skip central peaks
+                    if abs(peak_kx) < 0.01 and abs(peak_ky) < 0.01 and abs(peak_kz) < 0.01:
+                        continue
+                        
+                    # Shift to voxel position
+                    peak_kx += x_idx
+                    peak_ky += y_idx
+                    peak_kz += z_idx
+                    
+                    # Normalize peak value for opacity
+                    normalized_opacity = peak_values[i] / max_peak_value
+                    
+                    # Add individual peak to the figure
+                    fig_RS.add_trace(
+                        go.Scatter3d(
+                            x=[peak_kx],
+                            y=[peak_ky],
+                            z=[peak_kz],
+                            mode='markers',
+                            marker=dict(
+                                size=5,
+                                color=[peak_values[i]],
+                                colorscale='Plasma',
+                                opacity=normalized_opacity,
+                                showscale=False
+                            ),
+                            name=f'x={x_idx},y={y_idx},z={z_idx},p={i}',
+                            showlegend=False
+                        )
+                    )
+
+# Update layout
+fig_RS.update_layout(
+    title=f"FFT Peaks in All Voxel Positions (excluding central peaks, max value: {max_peak_value:.2f})",
     scene=dict(
-        xaxis_title="KX",
-        yaxis_title="KY",
-        zaxis_title="KZ",
-        aspectmode='cube'
+        aspectmode='cube',
+        xaxis_title="KX + voxel_x",
+        yaxis_title="KY + voxel_y",
+        zaxis_title="KZ + voxel_z",
+        camera=dict(
+            eye=dict(x=2, y=2, z=2)
+        )
     ),
-    width=800, height=800
-    
+    width=1000,
+    height=1000
 )
 
-figE.show()
+fig_RS.show()
 
-print(f"eigenvalues: {eigenvalues}\nand\neigenvectors: {eigenvectors}")
+# # Plot peak-based orientations with magnitude-based scaling
+# for i, y_pos in enumerate(y_positions):
+#     fig_all.add_trace(
+#         go.Scatter3d(
+#             x=[fixed_x, fixed_x + all_orientations_peak[i,0] * norm_magnitudes_peak[i]],
+#             y=[y_pos, y_pos + all_orientations_peak[i,1] * norm_magnitudes_peak[i]],
+#             z=[fixed_z, fixed_z + all_orientations_peak[i,2] * norm_magnitudes_peak[i]],
+#             mode='lines',
+#             line=dict(
+#                 color='blue', 
+#                 width=3,
+#                 #opacity=0.7
+#             ),
+#             name='Peak orientation'
+#         )
+#     )
 
-
-
-
-
-#%%
-#figE = go.Figure()
-figE = plot_3D_tomogram(tomo_data, intensity_threshold=0.8)
-vz, vy, vx = voxel_results['voxel_size']
-# Process multiple voxels
-# voxel_indices = [(6//2, 10//2, 6//2-1), (6//2, 10//2, 6//2), (6//2, 10//2, 6//2+1),
-#                  (6//2, 10//2-1, 6//2), (6//2, 10//2+1, 6//2), (6//2-1, 10//2, 6//2),
-#                  (6//2+1, 10//2+1, 6//2), (6//2-1, 10//2+1, 6//2), (6//2, 10//2+1, 6//2+1),
-#                  (6//2-1, 10//2-1, 6//2), (6//2+1, 10//2-1, 6//2), (6//2, 10//2-1, 6//2-1)]  # Example indices
-
-voxel_indices = generate_voxel_indices(
-                                        (2//2,voxel_results['n_voxels'][0]-3//2),
-                                        (4//2,voxel_results['n_voxels'][1]-6//2),
-                                        (8//2,voxel_results['n_voxels'][2]-1//2)
-                                       )
-
-
-thetas = []
-for z_idx, y_idx, x_idx in voxel_indices:
-    # Compute orientation tensor and eigenvalues/eigenvectors
-    region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-    magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-    orientation_tensor = np.nan_to_num(compute_orientation_tensor(magnitude, KX, KY, KZ))
-    epsilon = 1e-8
-    orientation_tensor += np.eye(3) * epsilon
-    eigenvalues, eigenvectors = np.linalg.eigh(orientation_tensor)
-    print(eigenvalues)
-
-    # Calculate the angle of the first eigenvector
-    theta = np.rad2deg(np.arccos(eigenvectors[2, 2] / np.linalg.norm(eigenvectors[2, :], axis=0)))
-    thetas.append(theta)
-    
-
-# Normalize thetas for color mapping
-theta_min = min(thetas)
-theta_max = max(thetas)
-normalized_thetas = [(theta - theta_min) / (theta_max - theta_min) for theta in thetas]
-
-
-for idx, (z_idx, y_idx, x_idx) in enumerate(voxel_indices):
-    # Compute orientation tensor and eigenvalues/eigenvectors
-    region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-    magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-    orientation_tensor = np.nan_to_num(compute_orientation_tensor(magnitude, KX, KY, KZ))
-    epsilon = 1e-8
-    orientation_tensor += np.eye(3) * epsilon
-    eigenvalues, eigenvectors = np.linalg.eigh(orientation_tensor)
-
-    # Scale eigenvectors by eigenvalues for arrow lengths
-    axes_lengths = np.sqrt(eigenvalues)
-
-    # Normalize axes_lengths for better visualization
-    max_length = np.max(axes_lengths)
-    if max_length > 0:
-        axes_lengths = (axes_lengths / max_length) * 20
-
-    # Calculate the center of the voxel in real space
-    voxel_center = np.array([x_idx * vx, y_idx * vy, z_idx * vz])
-
-    # Use the normalized theta for color
-    color_value = normalized_thetas[idx]
-
-#     # Create a custom HSV colorscale
-#     hsv_colorscale = [
-#         [0.0, 'rgb(255, 0, 0)'],   # Red
-#         [0.1667, 'rgb(255, 255, 0)'],  # Yellow
-#         [0.3333, 'rgb(0, 255, 0)'],   # Green
-#         [0.5, 'rgb(0, 255, 255)'],   # Cyan
-#         [0.6667, 'rgb(0, 0, 255)'],   # Blue
-#         [0.8333, 'rgb(255, 0, 255)'],  # Magenta
-#         [1.0, 'rgb(255, 0, 0)']    # Red (wraps around)
-# ]
-
-    for i in range(3):
-        figE.add_trace(go.Cone(
-            x=[voxel_center[0]], y=[voxel_center[1]], z=[voxel_center[2]],
-            u=[eigenvectors[0, i] * axes_lengths[i]], 
-            v=[eigenvectors[1, i] * axes_lengths[i]], 
-            w=[eigenvectors[2, i] * axes_lengths[i]],
-            sizemode="absolute",
-            sizeref=0,
-            anchor="tail",
-            showscale=(i == idx+i),  # Show scale only once
-            opacity=color_value,
-            colorbar=dict(title='Theta Angle'),
-            colorscale='hsv',
-        ))
-
-figE.update_layout(
-    title="Orientation Vectors in Real Space",
+# Update layout
+fig_all.update_layout(
+    title=f"Orientation Vectors Along Y-axis (x={fixed_x}, z={fixed_z})<br>Arrow length scaled by intensity",
     scene=dict(
+        aspectmode='cube',
         xaxis_title="X",
         yaxis_title="Y",
         zaxis_title="Z",
-        aspectmode='cube'
+        camera=dict(eye=dict(x=2, y=2, z=2))
     ),
-    width=800, height=800
+    width=1000,
+    height=1000,
+    showlegend=True
 )
 
-figE.show()
+fig_all.show()
 
+# Print average orientations and magnitudes
+print("\nFFT Magnitude Method:")
+print(f"Average orientation: ({np.mean(all_orientations_fft[:,0]):.3f}, {np.mean(all_orientations_fft[:,1]):.3f}, {np.mean(all_orientations_fft[:,2]):.3f})")
+print(f"Average magnitude: {np.mean(all_magnitudes_fft):.3f}")
 
-'''
-TEST FOR SINGLE VOXEL FINISHED
-'''
-
-
-
+print("\nPeak-based Method:")
+print(f"Average orientation: ({np.mean(all_orientations_peak[:,0]):.3f}, {np.mean(all_orientations_peak[:,1]):.3f}, {np.mean(all_orientations_peak[:,2]):.3f})")
+print(f"Average magnitude: {np.mean(all_magnitudes_peak):.3f}")
 
 
 
@@ -1426,111 +2377,123 @@ TEST FOR SINGLE VOXEL FINISHED
 
 
 #%%
-total_fig_xy = 0
-total_fig_yz = 0
-total_fig_xz = 0
-figE = go.Figure()
-for x_idx in range(0, voxel_results['n_voxels'][2] - 1):
-    z_idx, y_idx, x_idx = 6, 10, x_idx
-    intensity_threshold = 0.5
+'''
+Plot orientation vectors for all voxels in the 3D volume
+'''
+# Create figure for all orientation vectors
+fig_all = go.Figure()
 
-    # Example usage:
-    fft_threshold = 0
+# Store orientations and magnitudes for comparison
+all_orientations = []
+all_magnitudes = []
+x_positions = []
+y_positions = []
+z_positions = []
 
-    # Plot voxel region
-    fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, intensity_threshold)
-    if show_plots:
-        fig_local.show()
-        fig.show()
-    # Print voxel statistics
-    print(f"\nVoxel Statistics:")
-    print(f"Mean intensity: {voxel_results['means'][z_idx, y_idx, x_idx]:.2f}")
-    print(f"Max intensity: {voxel_results['maxes'][z_idx, y_idx, x_idx]:.2f}")
-    print(f"Standard deviation: {voxel_results['stds'][z_idx, y_idx, x_idx]:.2f}")
+# Analyze each voxel in the volume
+for x_idx in range(0, voxel_results['n_voxels'][2]):
+    for y_idx in range(0, voxel_results['n_voxels'][1]):
+        for z_idx in range(0, voxel_results['n_voxels'][0]):
+            # Extract and process voxel
+            region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+            magnitude, KX, KY, KZ = compute_fft_q(region, use_vignette=True,pixel_size=18)
+            
+            # ---- FFT Magnitude Method ----
+            center_x = magnitude.shape[0] // 2
+            center_y = magnitude.shape[1] // 2
+            center_z = magnitude.shape[2] // 2
+            
+            z_coords, y_coords, x_coords = np.meshgrid(
+                np.arange(magnitude.shape[2]) - center_z,
+                np.arange(magnitude.shape[1]) - center_y,
+                np.arange(magnitude.shape[0]) - center_x,
+                indexing='ij'
+            )
+            
+            # Create masks
+            radius = 5
+            r = np.sqrt(x_coords**2 + y_coords**2 + z_coords**2)
+            central_mask = r > radius
+            upper_mask = KZ > 0
+            
+            max_val = np.max(magnitude)
+            threshold = max_val * 0
+            threshold_mask = magnitude > threshold
+            combined_mask = central_mask & threshold_mask & upper_mask
+            
+            total_intensity = np.sum(magnitude * combined_mask)
+            
+            if total_intensity > 0:
+                com_x = np.sum(KX * magnitude * combined_mask) / total_intensity
+                com_y = np.sum(KY * magnitude * combined_mask) / total_intensity
+                com_z = np.sum(KZ * magnitude * combined_mask) / total_intensity
+                
+                # Store orientation and magnitude
+                all_orientations.append([com_x, com_y, com_z])
+                all_magnitudes.append(total_intensity)
+                x_positions.append(x_idx)
+                y_positions.append(y_idx)
+                z_positions.append(z_idx)
 
-    # Analyze voxel Fourier with projections
-    fig_3d_fft, fig_xy, fig_yz, fig_xz = analyze_voxel_fourier(
-        tomo_data, voxel_results, z_idx, y_idx, x_idx, fft_threshold=fft_threshold, use_vignette=True, overlay_octants=False
+# Convert to numpy arrays
+all_orientations = np.array(all_orientations)
+all_magnitudes = np.array(all_magnitudes)
+x_positions = np.array(x_positions)
+y_positions = np.array(y_positions)
+z_positions = np.array(z_positions)
+
+# Normalize magnitudes for scaling
+max_mag = np.max(all_magnitudes)
+norm_magnitudes = all_magnitudes / max_mag * 2.0  # Reduced scale factor for better visibility
+
+# Plot orientation vectors
+for i in range(len(x_positions)):
+    # Add arrow
+    fig_all.add_trace(
+        go.Scatter3d(
+            x=[x_positions[i], x_positions[i] + all_orientations[i,0] * norm_magnitudes[i]],
+            y=[y_positions[i], y_positions[i] + all_orientations[i,1] * norm_magnitudes[i]],
+            z=[z_positions[i], z_positions[i] + all_orientations[i,2] * norm_magnitudes[i]],
+            mode='lines',
+            line=dict(
+                color='red', 
+                width=1  # Reduced width for better visibility
+                #opacity=0.6  # Added opacity for better visualization of overlapping arrows
+            ),
+            name='FFT orientation',
+            showlegend=False
+        )
     )
-    if show_plots:
-        fig_3d_fft.show()
-        fig_xy.show()
-        fig_yz.show()
-        fig_xz.show()
-    total_fig_xy += fig_xy.data[0]['z']
-    total_fig_yz += fig_yz.data[0]['z']
-    total_fig_xz += fig_xz.data[0]['z']
 
-    # Compute orientation tensor and eigenvalues/eigenvectors
-    region = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-    magnitude, KX, KY, KZ = compute_fft(region, use_vignette=True)
-    orientation_tensor = compute_orientation_tensor(magnitude, KX, KY, KZ)
-    eigenvalues, eigenvectors = np.linalg.eigh(orientation_tensor)
-
-    # Scale eigenvectors by eigenvalues for arrow lengths
-    axes_lengths = np.sqrt(eigenvalues)
-    ellipsoid_center = np.array([x_idx * vx, y_idx * vy, z_idx * vz])
-
-    # Normalize axes_lengths for better visualization
-    max_length = np.max(axes_lengths)
-    if max_length > 0:
-        axes_lengths = axes_lengths / max_length
-
-    # Add arrows to plot
-    for i in range(3):
-        figE.add_trace(go.Cone(
-            x=[ellipsoid_center[0]], y=[ellipsoid_center[1]], z=[ellipsoid_center[2]],
-            u=[eigenvectors[0, i] * axes_lengths[i]], 
-            v=[eigenvectors[1, i] * axes_lengths[i]], 
-            w=[eigenvectors[2, i] * axes_lengths[i]],
-            sizemode="absolute",
-            sizeref=0.05,  # Adjust this value as needed
-            anchor="tail",
-            colorscale='Viridis',
-            showscale=False
-        ))
-
-figE.update_layout(
-    title="Orientation Vectors for Voxels",
+# Update layout
+fig_all.update_layout(
+    title="3D Orientation Vectors (All Voxels)<br>Arrow length scaled by intensity",
     scene=dict(
+        aspectmode='cube',
         xaxis_title="X",
         yaxis_title="Y",
         zaxis_title="Z",
-        aspectmode='cube'
+        camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
     ),
-    width=800, height=800
+    width=1000,
+    height=1000,
+    showlegend=False
 )
 
-figE.show()
+fig_all.show()
 
-    
+# Print average orientation and magnitude
+print("\nFFT Magnitude Method:")
+print(f"Average orientation: ({np.mean(all_orientations[:,0]):.3f}, {np.mean(all_orientations[:,1]):.3f}, {np.mean(all_orientations[:,2]):.3f})")
+print(f"Average magnitude: {np.mean(all_magnitudes):.3f}")
 
-    
-    
-    
-    
-    
-    
-    
-#%%
-n_wedges=16
-min_r=1.5
-max_r=4
-wedge_intensities = calculate_wedge_intensities_with_radius(total_fig_xz, num_wedges=n_wedges, min_radius=min_r, max_radius=max_r)    
-visualize_wedges(total_fig_xz, num_wedges=n_wedges, min_radius=min_r, max_radius=max_r, show_first_wedge=False)    
-plt.figure()
-plt.plot(wedge_intensities)
-plt.show()
-
-
-#%%
-# Extract 3D data from fig_3d_fft
-array_3d = extract_3d_data_from_figure(fig_3d_fft)
-num_azimuthal_wedges = 8
-num_polar_wedges = 4
-min_radius = 5
-max_radius = 20
-intensities = calculate_3d_wedge_intensities(array_3d, num_azimuthal_wedges, num_polar_wedges, min_radius, max_radius)
+# Optional: Save orientations and positions to file
+np.savez('orientation_data.npz', 
+         orientations=all_orientations,
+         magnitudes=all_magnitudes,
+         x_pos=x_positions,
+         y_pos=y_positions,
+         z_pos=z_positions)
 
 
 
@@ -1549,33 +2512,14 @@ intensities = calculate_3d_wedge_intensities(array_3d, num_azimuthal_wedges, num
 
 
 
-#%%
-# Calculate and plot octant intensities
-# Extract voxel size from voxel_results
-vz, vy, vx = voxel_results['voxel_size']
 
-# Ensure you have the magnitude and frequency coordinates from the FFT
-fft_3d = np.fft.fftn(tomo_data[z_idx*vz:(z_idx+1)*vz, y_idx*vy:(y_idx+1)*vy, x_idx*vx:(x_idx+1)*vx])
-fft_3d_shifted = np.fft.fftshift(fft_3d)
-magnitude = np.abs(fft_3d_shifted)
 
-# Create frequency coordinates
-kz = np.fft.fftshift(np.fft.fftfreq(vz))
-ky = np.fft.fftshift(np.fft.fftfreq(vy))
-kx = np.fft.fftshift(np.fft.fftfreq(vx))
 
-# Create meshgrid
-KZ, KY, KX = np.meshgrid(kz, ky, kx, indexing='ij')
 
-# Calculate octant intensities
-octant_intensities = calculate_octant_intensities(magnitude, KX, KY, KZ)
-# Calculate orientation vector based on octants
-kx_vector, ky_vector, kz_vector = calculate_orientation_vector_from_octants(octant_intensities, KX, KY, KZ)
 
-print(f"k_vector: {kx_vector}, {ky_vector}, {kz_vector}")
 
-# Plot the orientation vector on the 3D FFT plot
-plot_orientation_vector_on_fft(fig_3d_fft, kx_vector, ky_vector, kz_vector)
 
-fig_3d_fft.show()
-# %%
+
+
+
+
