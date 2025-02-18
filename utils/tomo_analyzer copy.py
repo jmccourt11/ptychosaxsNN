@@ -15,6 +15,21 @@ from scipy.ndimage import maximum_filter
 from tqdm import tqdm
 from scipy.io import loadmat
 from scipy.spatial.transform import Rotation
+import colorsys
+
+def create_hsv_colorscale(n_colors=100):
+    colors = []
+    for i in range(n_colors + 1):  # +1 to include both endpoints
+        # Convert to HSV color (hue cycles from 0 to 1)
+        hue = i / n_colors
+        # Full saturation and value for vibrant colors
+        hsv = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        # Convert to RGB string format
+        rgb = f'rgb({int(hsv[0]*255)},{int(hsv[1]*255)},{int(hsv[2]*255)})'
+        colors.append([i/n_colors, rgb])
+    # Add the first color again at the end to make it cyclic
+    colors.append([1.0, colors[0][1]])
+    return colors
 
 def get_orientation_matrix(peak_positions, peak_values):
     """
@@ -1295,139 +1310,408 @@ def initialize_combined_figure(nrows):
     
     return fig_combined
 
-#%%
-# Load the data
-#tomogram = "/net/micdata/data2/12IDC/2024_Dec/misc/JM02_3D/ROI2_Ndp512_MLc_p10_gInf_Iter1000/recons/tomogram_alignment_recon_cropped_14nm_2.tif"
-tomogram = "/net/micdata/data2/12IDC//2021_Nov/results/tomography/Sample6_tomo6_SIRT_tomogram.tif"
-tomo_data = tifffile.imread(tomogram).swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
-
-#Rotate the tomogram
-axis='z'
-angle=0
-if axis == 'x':
-    rotated_data = rotate(tomo_data, angle, axes=(1, 2), reshape=False)
-elif axis == 'y':
-    rotated_data = rotate(tomo_data, angle, axes=(0, 2), reshape=False)
-elif axis == 'z':
-    rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
-tomo_data = rotated_data
-
-# Create and display the plot
-fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.8)
-fig.show()
-# Print dimensions
-print(f"Tomogram shape: {tomo_data.shape}")
-
-#magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
-magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=18)
-   
-
-# Define a threshold for the magnitude
-threshold = 0.01 * np.max(magnitude)  # Example: 10% of the max magnitude
-
-# Flatten the arrays
-kx_flat = KX.flatten()
-ky_flat = KY.flatten()
-kz_flat = KZ.flatten()
-magnitude_flat = magnitude.flatten()
-
-# Apply the threshold
-mask = magnitude_flat > threshold
-kx_filtered = kx_flat[mask]
-ky_filtered = ky_flat[mask]
-kz_filtered = kz_flat[mask]
-magnitude_filtered = magnitude_flat[mask]
-
-
-# Create a 3D scatter plot of the FFT magnitude
-fig_fft = go.Figure(data=go.Scatter3d(
-    x=kx_filtered,
-    y=ky_filtered,
-    z=kz_filtered,
-    mode='markers',
-    marker=dict(
-        size=10,
-        color=magnitude_filtered,
-        colorscale='Viridis',
-        opacity=0.8,
-        colorbar=dict(title='Magnitude')
-    )
-))
-
-
-# Load and plot cell info
-cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo.mat")
-h=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
-k=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
-l=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
-vs=[]
-
-for i,h in enumerate(h):
-    v=h*cellinfo_data['recilatticevectors'][0]+k[i]*cellinfo_data['recilatticevectors'][1]+l[i]*cellinfo_data['recilatticevectors'][2]
-    vs.append(v)
+def visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
+                                     z_idx, y_idx, x_idx,threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18):
+    """
+    Analyze orientation for a single voxel and overlay on tomogram
+    Parameters:
+        z_idx, y_idx, x_idx: indices of the voxel to analyze
+    """
+    # Analyze single voxel
+    voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+    _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
+                                             z_idx, y_idx, x_idx, 
+                                             h, k, l,threshold=threshold, sigma=sigma, cutoff=cutoff, pixel_size=pixel_size, 
+                                             visualize=False)
     
-vs=np.array(vs)
-fig_fft.add_trace(go.Scatter3d(
-    x=vs.T[0],
-    y=vs.T[1],
-    z=vs.T[2],
-    mode='markers',
-    marker=dict(size=10, color='red', opacity=0.8),
-    name='Cell Info'
-))
+    # Create coordinate arrays for full tomogram
+    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
+                         np.arange(tomo_data.shape[1]), 
+                         np.arange(tomo_data.shape[2]), 
+                         indexing='ij')
+    
+    # Apply threshold to full tomogram
+    full_max = tomo_data.max()
+    full_threshold = full_max * 0.8
+    full_mask = tomo_data > full_threshold
+    q
+    # Create figure
+    fig = go.Figure()
+    
+    # Add full tomogram points with low opacity
+    fig.add_trace(go.Scatter3d(
+        x=X[full_mask],
+        y=Y[full_mask],
+        z=Z[full_mask],
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='gray',
+            opacity=0.1
+        ),
+        name='Background',
+        showlegend=False
+    ))
+    
+    # Add analyzed voxel
+    vz, vy, vx = voxel_results['voxel_size']
+    z_start, z_end = z_idx*vz, (z_idx+1)*vz
+    y_start, y_end = y_idx*vy, (y_idx+1)*vy
+    x_start, x_end = x_idx*vx, (x_idx+1)*vx
+    
+    # Extract voxel region directly using array indexing
+    voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
+    voxel_mask = voxel_region > full_threshold
+    
+    # Create coordinate arrays for the voxel
+    z_coords, y_coords, x_coords = np.where(voxel_mask)
+    
+    # Adjust coordinates to global position
+    z_coords += z_start
+    y_coords += y_start
+    x_coords += x_start
+    
+    if len(z_coords) > 0:
+        # Create cyclic colorscale over 120 degrees
+        cyclic_angle = angle % 120  # Make angle cyclic over 120 degrees
+        normalized_angle = cyclic_angle / 120  # Normalize to [0,1]
+        
+        # Custom colorscale that's continuous from start to end
+        colors = [
+            [0, 'rgb(68,1,84)'],       # Viridis start
+            [0.25, 'rgb(59,82,139)'],
+            [0.5, 'rgb(33,144,141)'],
+            [0.75, 'rgb(94,201,98)'],
+            [1, 'rgb(68,1,84)']        # Back to start for continuity
+        ]
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords,
+            y=y_coords,
+            z=z_coords,
+            mode='markers',
+            marker=dict(
+                size=3,
+                color=[normalized_angle] * len(z_coords),  # Same angle for all points
+                colorscale=colors,
+                opacity=0.3,
+                colorbar=dict(
+                    title='Orientation Angle (°)',
+                    tickmode='array',
+                    ticktext=['0°', '30°', '60°', '90°', '120°'],
+                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
+                )
+            ),
+            name=f'Voxel ({z_idx},{y_idx},{x_idx})',
+            showlegend=False
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=f"Orientation = {angle:.1f}°, RMSD = {rmsd:.2e}",
+            y=0.95
+        ),
+        scene=dict(
+            aspectmode='data',
+            camera=dict(eye=dict(x=2, y=2, z=2)),
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        width=1000, height=800,
+        showlegend=True
+    )
+    
+    return fig
 
 
-fig_fft.update_layout(
-    title="3D FFT Magnitude with Threshold",
-    scene=dict(
-        xaxis_title="KX",
-        yaxis_title="KY",
-        zaxis_title="KZ",
-        aspectmode='cube'
-    ),
-    width=800, height=800
-)
+def visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
+                             z_idx, y_range, x_idx,threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18):
+    """
+    Analyze orientation for a line of voxels along y-axis
+    Parameters:
+        z_idx, x_idx: fixed indices for z and x
+        y_range: range of y indices to analyze
+    """
+    # Create coordinate arrays for full tomogram
+    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
+                         np.arange(tomo_data.shape[1]), 
+                         np.arange(tomo_data.shape[2]), 
+                         indexing='ij')
+    
+    # Apply threshold to full tomogram
+    full_max = tomo_data.max()
+    full_threshold = full_max * 0.7
+    full_mask = tomo_data > full_threshold
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add full tomogram points with low opacity
+    fig.add_trace(go.Scatter3d(
+        x=X[full_mask],
+        y=Y[full_mask],
+        z=Z[full_mask],
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='gray',
+            opacity=0.1
+        ),
+        name='Background',
+        showlegend=False
+    ))
+    
+    # Process each voxel in the y-range
+    vz, vy, vx = voxel_results['voxel_size']
+    all_angles = []
+    all_coords = []
+    
+    for y_idx in y_range:
+        # Extract and analyze voxel
+        voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+        try:
+            _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
+                                                     z_idx, y_idx, x_idx, 
+                                                     h, k, l,threshold=threshold, sigma=sigma, cutoff=cutoff, pixel_size=pixel_size, 
+                                                     visualize=False)
+            
+            # Get voxel coordinates
+            z_start, z_end = z_idx*vz, (z_idx+1)*vz
+            y_start, y_end = y_idx*vy, (y_idx+1)*vy
+            x_start, x_end = x_idx*vx, (x_idx+1)*vx
+            
+            voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
+            voxel_mask = voxel_region > full_threshold
+            
+            z_coords, y_coords, x_coords = np.where(voxel_mask)
+            
+            # Adjust coordinates to global position
+            z_coords += z_start
+            y_coords += y_start
+            x_coords += x_start
+            
+            # Store results
+            cyclic_angle = angle % 120
+            normalized_angle = cyclic_angle / 120
+            
+            all_angles.extend([normalized_angle] * len(z_coords))
+            all_coords.extend(zip(x_coords, y_coords, z_coords))
+            
+        except Exception as e:
+            print(f"Error processing voxel (z={z_idx},y={y_idx},x={x_idx}): {e}")
+            continue
+    
+    if all_coords:
+        # Convert coordinates to arrays
+        x_coords, y_coords, z_coords = zip(*all_coords)
+        
+        # Custom colorscale
+        colors = [
+            [0, 'rgb(68,1,84)'],
+            [0.25, 'rgb(59,82,139)'],
+            [0.5, 'rgb(33,144,141)'],
+            [0.75, 'rgb(94,201,98)'],
+            [1, 'rgb(68,1,84)']
+        ]
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords,
+            y=y_coords,
+            z=z_coords,
+            mode='markers',
+            marker=dict(
+                size=3,
+                color=all_angles,
+                colorscale=colors,
+                opacity=0.3,
+                colorbar=dict(
+                    title='Orientation Angle (°)',
+                    tickmode='array',
+                    ticktext=['0°', '30°', '60°', '90°', '120°'],
+                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
+                )
+            ),
+            name='Analyzed Voxels',
+            showlegend=False
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title=dict(
+            text=f"Orientation Analysis Along Y-axis (z={z_idx}, y={y_range[0]}-{y_range[-1]}, x={x_idx})",
+            y=0.95
+        ),
+        scene=dict(
+            aspectmode='data',
+            camera=dict(eye=dict(x=2, y=2, z=2)),
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        width=1000, height=800,
+        showlegend=True
+    )
+    
+    return fig
 
-fig_fft.show()
 
+def visualize_section_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
+                                z_range, y_range, x_range, threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18,cyclic_period=None):
+    """
+    Analyze orientation for a 3D section of voxels
+    Parameters:
+        z_range, y_range, x_range: ranges of indices to analyze
+        cyclic_period: if set, angles will be made cyclic with this period (in degrees)
+                      if None, raw angles will be used
+    """
+    # Create coordinate arrays for full tomogram
+    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
+                         np.arange(tomo_data.shape[1]), 
+                         np.arange(tomo_data.shape[2]), 
+                         indexing='ij')
+    
+    # Apply threshold to full tomogram
+    full_max = tomo_data.max()
+    full_threshold = full_max * 0.75
+    full_mask = tomo_data > full_threshold
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Add full tomogram points with low opacity
+    fig.add_trace(go.Scatter3d(
+        x=X[full_mask],
+        y=Y[full_mask],
+        z=Z[full_mask],
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='gray',
+            opacity=0.05,
+        ),
+        name='Background',
+        showlegend=False
+    ))
+    
+    # Process each voxel in the section
+    vz, vy, vx = voxel_results['voxel_size']
+    all_angles = []
+    all_coords = []
+    all_rmsds = []
+    
+    # Progress tracking
+    total_voxels = len(z_range) * len(y_range) * len(x_range)
+    processed = 0
+    
+    # Track angle range for normalization
+    min_angle = float('inf')
+    max_angle = float('-inf')
+    
+    for z_idx in z_range:
+        for y_idx in y_range:
+            for x_idx in x_range:
+                processed += 1
+                if processed % 10 == 0:
+                    print(f"Processing voxel {processed}/{total_voxels}")
+                
+                voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
+                try:
+                    _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
+                                                             z_idx, y_idx, x_idx, 
+                                                             h, k, l,threshold=threshold, sigma=sigma, cutoff=cutoff, pixel_size=pixel_size, 
+                                                             visualize=False)
+                    
+                    # Process angle based on cyclic_period
+                    if cyclic_period is not None:
+                        angle = angle % cyclic_period
+                    
+                    # Update angle range
+                    min_angle = min(min_angle, angle)
+                    max_angle = max(max_angle, angle)
+                    
+                    # Get voxel coordinates
+                    z_start, z_end = z_idx*vz, (z_idx+1)*vz
+                    y_start, y_end = y_idx*vy, (y_idx+1)*vy
+                    x_start, x_end = x_idx*vx, (x_idx+1)*vx
+                    
+                    voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
+                    voxel_mask = voxel_region > full_threshold
+                    
+                    z_coords, y_coords, x_coords = np.where(voxel_mask)
+                    
+                    # Adjust coordinates to global position
+                    z_coords += z_start
+                    y_coords += y_start
+                    x_coords += x_start
+                    
+                    all_angles.extend([angle] * len(z_coords))
+                    all_coords.extend(zip(x_coords, y_coords, z_coords))
+                    all_rmsds.extend([rmsd] * len(z_coords))
+                    
+                except Exception as e:
+                    print(f"Error processing voxel (z={z_idx},y={y_idx},x={x_idx}): {e}")
+                    continue
+    
+    if all_coords:
+        # Convert coordinates to arrays
+        x_coords, y_coords, z_coords = zip(*all_coords)
+        
+        # Normalize angles to [0,1] for colorscale
+        angle_range = max_angle - min_angle
+        if angle_range > 0:
+            normalized_angles = [(a - min_angle) / angle_range for a in all_angles]
+        else:
+            normalized_angles = [0.5] * len(all_angles)
+        
+        fig.add_trace(go.Scatter3d(
+            x=x_coords,
+            y=y_coords,
+            z=z_coords,
+            mode='markers',
+            marker=dict(
+                size=3,
+                color=normalized_angles,
+                colorscale=create_hsv_colorscale(5),  # Creates 5 color stops plus the cyclic endpoint,
+                opacity=0.05,
+                colorbar=dict(
+                    title='Orientation Angle (°)',
+                    tickmode='array',
+                    ticktext=[f'{min_angle:.0f}°', 
+                             f'{(min_angle + angle_range/4):.0f}°',
+                             f'{(min_angle + angle_range/2):.0f}°',
+                             f'{(min_angle + 3*angle_range/4):.0f}°',
+                             f'{max_angle:.0f}°'],
+                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
+                )
+            ),
+            name='Analyzed Voxels',
+            showlegend=False
+        ))
+    
+    # Update layout
+    period_text = f" (Cyclic {cyclic_period}°)" if cyclic_period is not None else ""
+    fig.update_layout(
+        title=dict(
+            text=f"Orientation Analysis{period_text} for Section:<br>z={z_range[0]}-{z_range[-1]}, y={y_range[0]}-{y_range[-1]}, x={x_range[0]}-{x_range[-1]}",
+            y=0.95
+        ),
+        scene=dict(
+            aspectmode='data',
+            camera=dict(eye=dict(x=2, y=2, z=2)),
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z'
+        ),
+        width=1000, height=800,
+        showlegend=True
+    )
+    
+    return fig
 
-
-
-# Voxel size
-# Cindy: pixel size is ~18nm
-# Tomogram.shape = (179,185,162) -> (z,y,x)
-pixel_size=18 #nm
-limiting_axes=np.min(tomo_data.shape) #pixels
-tomo_nm_size=pixel_size*limiting_axes #nm
-n_unit_cells=tomo_nm_size//(cellinfo_data['Vol'][0][0]**(1/3)) #n unit cells / tomogram
-
-print(f'~n unit cells per tomogram: {n_unit_cells}')
-
-voxel_size = (20,20,20)  # cubic voxel size, pixels
-
-print(f'~m unit cells per voxel: {n_unit_cells*voxel_size[0]/limiting_axes}')
-
-voxel_results = analyze_tomogram_voxels(tomo_data, voxel_size=voxel_size)
-
-# Print number of voxels in each dimension
-print(f"Number of voxels (z, y, x): {voxel_results['n_voxels']}")
-
-show_plots = False
-
-# Define a threshold for the magnitude
-threshold = 0.05 # Example: 5% of the max magnitude
-
-# Peak finding threshold and sigma
-peak_threshold=4e-2
-sigma=.5
-
-
-
-
-
-#%%
 # Test case with visualization
-def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h, k, l, visualize=True):
+def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h, k, l, threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18, visualize=True):
     """
     Test and visualize all three steps:
     1. Original peaks
@@ -1435,11 +1719,12 @@ def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h,
     3. After rotation around (110)
     """
     # Get voxel FFT peaks and setup (same as before)
-    magnitude, KX, KY, KZ = compute_fft_q(voxel_data, use_vignette=True, pixel_size=18)
+    magnitude, KX, KY, KZ = compute_fft_q(voxel_data, use_vignette=True, pixel_size=pixel_size)
     voxel_peaks, voxel_values = find_peaks_3d_cutoff(magnitude, 
-                                                    threshold=0.1,
-                                                    sigma=0.5, 
-                                                    center_cutoff_radius=3)
+                                                    threshold=threshold,
+                                                    sigma=sigma, 
+                                                    center_cutoff_radius=cutoff)
+
     voxel_peaks_q = np.array([
         KX[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]],
         KY[voxel_peaks[:, 0], voxel_peaks[:, 1], voxel_peaks[:, 2]],
@@ -1573,7 +1858,141 @@ def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h,
         return fig, best_angle, best_rmsd
     else:
         return None, best_angle, best_rmsd
+
+
+
 #%%
+# Load the data
+#tomogram = "/net/micdata/data2/12IDC/2024_Dec/misc/JM02_3D/ROI2_Ndp512_MLc_p10_gInf_Iter1000/recons/tomogram_alignment_recon_cropped_14nm_2.tif"
+tomogram = "/net/micdata/data2/12IDC//2021_Nov/results/tomography/Sample6_tomo6_SIRT_tomogram.tif"
+tomo_data = tifffile.imread(tomogram).swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
+
+#Rotate the tomogram
+axis='z'
+angle=0
+if axis == 'x':
+    rotated_data = rotate(tomo_data, angle, axes=(1, 2), reshape=False)
+elif axis == 'y':
+    rotated_data = rotate(tomo_data, angle, axes=(0, 2), reshape=False)
+elif axis == 'z':
+    rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
+tomo_data = rotated_data
+
+# Create and display the plot
+fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.8)
+fig.show()
+# Print dimensions
+print(f"Tomogram shape: {tomo_data.shape}")
+
+#magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
+magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=18)
+   
+
+# Define a threshold for the magnitude
+threshold = 0.01 * np.max(magnitude)  # Example: 10% of the max magnitude
+
+# Flatten the arrays
+kx_flat = KX.flatten()
+ky_flat = KY.flatten()
+kz_flat = KZ.flatten()
+magnitude_flat = magnitude.flatten()
+
+# Apply the threshold
+mask = magnitude_flat > threshold
+kx_filtered = kx_flat[mask]
+ky_filtered = ky_flat[mask]
+kz_filtered = kz_flat[mask]
+magnitude_filtered = magnitude_flat[mask]
+
+
+# Create a 3D scatter plot of the FFT magnitude
+fig_fft = go.Figure(data=go.Scatter3d(
+    x=kx_filtered,
+    y=ky_filtered,
+    z=kz_filtered,
+    mode='markers',
+    marker=dict(
+        size=10,
+        color=magnitude_filtered,
+        colorscale='Viridis',
+        opacity=0.8,
+        colorbar=dict(title='Magnitude')
+    )
+))
+
+
+# Load and plot cell info
+cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo.mat")
+h=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
+k=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
+l=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+vs=[]
+
+for i,h in enumerate(h):
+    v=h*cellinfo_data['recilatticevectors'][0]+k[i]*cellinfo_data['recilatticevectors'][1]+l[i]*cellinfo_data['recilatticevectors'][2]
+    vs.append(v)
+    
+vs=np.array(vs)
+fig_fft.add_trace(go.Scatter3d(
+    x=vs.T[0],
+    y=vs.T[1],
+    z=vs.T[2],
+    mode='markers',
+    marker=dict(size=10, color='red', opacity=0.8),
+    name='Cell Info'
+))
+
+
+fig_fft.update_layout(
+    title="3D FFT Magnitude with Threshold",
+    scene=dict(
+        xaxis_title="KX",
+        yaxis_title="KY",
+        zaxis_title="KZ",
+        aspectmode='cube'
+    ),
+    width=800, height=800
+)
+
+fig_fft.show()
+
+
+
+
+# Voxel size
+# Cindy: pixel size is ~18nm
+# Tomogram.shape = (179,185,162) -> (z,y,x)
+pixel_size=18 #nm
+limiting_axes=np.min(tomo_data.shape) #pixels
+tomo_nm_size=pixel_size*limiting_axes #nm
+n_unit_cells=tomo_nm_size//(cellinfo_data['Vol'][0][0]**(1/3)) #n unit cells / tomogram
+
+print(f'~n unit cells per tomogram: {n_unit_cells}')
+
+voxel_size = (12,12,12)  # cubic voxel size, pixels
+
+print(f'~m unit cells per voxel: {n_unit_cells*voxel_size[0]/limiting_axes}')
+
+voxel_results = analyze_tomogram_voxels(tomo_data, voxel_size=voxel_size)
+
+# Print number of voxels in each dimension
+print(f"Number of voxels (z, y, x): {voxel_results['n_voxels']}")
+
+show_plots = False
+
+# Define a threshold for the magnitude
+threshold = 0.05 # Example: 5% of the max magnitude
+
+# Peak finding threshold and sigma
+peak_threshold=4e-2
+sigma=.5
+
+
+
+
+
+#%%
+
 # Run test
 # Load and plot cell info
 cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo.mat")
@@ -1587,13 +2006,13 @@ for i,h in enumerate(hs):
     vs.append(v)
     
 crystal_peaks = np.array(vs)  # Your existing vs array from cellinfo
-z_idx, y_idx, x_idx =2,4,4
+z_idx, y_idx, x_idx=voxel_results['n_voxels'][0]//2, voxel_results['n_voxels'][1]//2, voxel_results['n_voxels'][2]//2
 voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
 fig, fig_local = plot_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx, 0.8)
 fig.show()
 
 fig, angle, rmsd = test_orientation_analysis(rotate(voxel_data, 0, axes=(1,2), reshape=False), 
-                                          crystal_peaks, z_idx, y_idx, x_idx, hs, ks, ls,visualize=True)
+                                          crystal_peaks, z_idx, y_idx, x_idx, hs, ks, ls,threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18, visualize=True)
 print(f"\nResults:")
 print(f"Rotation angle around (110): {angle:.1f}°")
 print(f"Final RMSD: {rmsd:.3e} nm⁻¹")
@@ -1663,271 +2082,64 @@ fig.show()
 
 #%%
 
-def visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
-                                     z_idx, y_idx, x_idx):
-    """
-    Analyze orientation for a single voxel and overlay on tomogram
-    Parameters:
-        z_idx, y_idx, x_idx: indices of the voxel to analyze
-    """
-    # Analyze single voxel
-    voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-    _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
-                                             z_idx, y_idx, x_idx, 
-                                             h, k, l,
-                                             visualize=False)
-    
-    # Create coordinate arrays for full tomogram
-    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
-                         np.arange(tomo_data.shape[1]), 
-                         np.arange(tomo_data.shape[2]), 
-                         indexing='ij')
-    
-    # Apply threshold to full tomogram
-    full_max = tomo_data.max()
-    full_threshold = full_max * 0.8
-    full_mask = tomo_data > full_threshold
-    
-    # Create figure
-    fig = go.Figure()
-    
-    # Add full tomogram points with low opacity
-    fig.add_trace(go.Scatter3d(
-        x=X[full_mask],
-        y=Y[full_mask],
-        z=Z[full_mask],
-        mode='markers',
-        marker=dict(
-            size=2,
-            color='gray',
-            opacity=0.1
-        ),
-        name='Background',
-        showlegend=False
-    ))
-    
-    # Add analyzed voxel
-    vz, vy, vx = voxel_results['voxel_size']
-    z_start, z_end = z_idx*vz, (z_idx+1)*vz
-    y_start, y_end = y_idx*vy, (y_idx+1)*vy
-    x_start, x_end = x_idx*vx, (x_idx+1)*vx
-    
-    # Extract voxel region directly using array indexing
-    voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
-    voxel_mask = voxel_region > full_threshold
-    
-    # Create coordinate arrays for the voxel
-    z_coords, y_coords, x_coords = np.where(voxel_mask)
-    
-    # Adjust coordinates to global position
-    z_coords += z_start
-    y_coords += y_start
-    x_coords += x_start
-    
-    if len(z_coords) > 0:
-        # Create cyclic colorscale over 120 degrees
-        cyclic_angle = angle % 120  # Make angle cyclic over 120 degrees
-        normalized_angle = cyclic_angle / 120  # Normalize to [0,1]
-        
-        # Custom colorscale that's continuous from start to end
-        colors = [
-            [0, 'rgb(68,1,84)'],       # Viridis start
-            [0.25, 'rgb(59,82,139)'],
-            [0.5, 'rgb(33,144,141)'],
-            [0.75, 'rgb(94,201,98)'],
-            [1, 'rgb(68,1,84)']        # Back to start for continuity
-        ]
-        
-        fig.add_trace(go.Scatter3d(
-            x=x_coords,
-            y=y_coords,
-            z=z_coords,
-            mode='markers',
-            marker=dict(
-                size=3,
-                color=[normalized_angle] * len(z_coords),  # Same angle for all points
-                colorscale=colors,
-                opacity=0.3,
-                colorbar=dict(
-                    title='Orientation Angle (°)',
-                    tickmode='array',
-                    ticktext=['0°', '30°', '60°', '90°', '120°'],
-                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
-                )
-            ),
-            name=f'Voxel ({z_idx},{y_idx},{x_idx})',
-            showlegend=False
-        ))
-    
-    # Update layout
-    fig.update_layout(
-        title=dict(
-            text=f"Orientation = {angle:.1f}°, RMSD = {rmsd:.2e}",
-            y=0.95
-        ),
-        scene=dict(
-            aspectmode='data',
-            camera=dict(eye=dict(x=2, y=2, z=2)),
-            xaxis_title='X',
-            yaxis_title='Y',
-            zaxis_title='Z'
-        ),
-        width=1000, height=800,
-        showlegend=True
-    )
-    
-    return fig
 
+# # Example usage:
+# z_idx, y_idx, x_idx = 3, 3, 4  # Example voxel coordinates
+# fig = visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, 
+#                                        hs, ks, ls, z_idx, y_idx, x_idx)
+# fig.show()
 
-def visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, h, k, l, 
-                             z_idx, y_range, x_idx):
-    """
-    Analyze orientation for a line of voxels along y-axis
-    Parameters:
-        z_idx, x_idx: fixed indices for z and x
-        y_range: range of y indices to analyze
-    """
-    # Create coordinate arrays for full tomogram
-    Z, Y, X = np.meshgrid(np.arange(tomo_data.shape[0]), 
-                         np.arange(tomo_data.shape[1]), 
-                         np.arange(tomo_data.shape[2]), 
-                         indexing='ij')
-    
-    # Apply threshold to full tomogram
-    full_max = tomo_data.max()
-    full_threshold = full_max * 0.7
-    full_mask = tomo_data > full_threshold
-    
-    # Create figure
-    fig = go.Figure()
-    
-    # Add full tomogram points with low opacity
-    fig.add_trace(go.Scatter3d(
-        x=X[full_mask],
-        y=Y[full_mask],
-        z=Z[full_mask],
-        mode='markers',
-        marker=dict(
-            size=2,
-            color='gray',
-            opacity=0.1
-        ),
-        name='Background',
-        showlegend=False
-    ))
-    
-    # Process each voxel in the y-range
-    vz, vy, vx = voxel_results['voxel_size']
-    all_angles = []
-    all_coords = []
-    
-    for y_idx in y_range:
-        # Extract and analyze voxel
-        voxel_data = extract_voxel_region(tomo_data, voxel_results, z_idx, y_idx, x_idx)
-        try:
-            _, angle, rmsd = test_orientation_analysis(voxel_data, crystal_peaks, 
-                                                     z_idx, y_idx, x_idx, 
-                                                     h, k, l,
-                                                     visualize=False)
-            
-            # Get voxel coordinates
-            z_start, z_end = z_idx*vz, (z_idx+1)*vz
-            y_start, y_end = y_idx*vy, (y_idx+1)*vy
-            x_start, x_end = x_idx*vx, (x_idx+1)*vx
-            
-            voxel_region = tomo_data[z_start:z_end, y_start:y_end, x_start:x_end]
-            voxel_mask = voxel_region > full_threshold
-            
-            z_coords, y_coords, x_coords = np.where(voxel_mask)
-            
-            # Adjust coordinates to global position
-            z_coords += z_start
-            y_coords += y_start
-            x_coords += x_start
-            
-            # Store results
-            cyclic_angle = angle % 120
-            normalized_angle = cyclic_angle / 120
-            
-            all_angles.extend([normalized_angle] * len(z_coords))
-            all_coords.extend(zip(x_coords, y_coords, z_coords))
-            
-        except Exception as e:
-            print(f"Error processing voxel (z={z_idx},y={y_idx},x={x_idx}): {e}")
-            continue
-    
-    if all_coords:
-        # Convert coordinates to arrays
-        x_coords, y_coords, z_coords = zip(*all_coords)
-        
-        # Custom colorscale
-        colors = [
-            [0, 'rgb(68,1,84)'],
-            [0.25, 'rgb(59,82,139)'],
-            [0.5, 'rgb(33,144,141)'],
-            [0.75, 'rgb(94,201,98)'],
-            [1, 'rgb(68,1,84)']
-        ]
-        
-        fig.add_trace(go.Scatter3d(
-            x=x_coords,
-            y=y_coords,
-            z=z_coords,
-            mode='markers',
-            marker=dict(
-                size=3,
-                color=all_angles,
-                colorscale=colors,
-                opacity=0.3,
-                colorbar=dict(
-                    title='Orientation Angle (°)',
-                    tickmode='array',
-                    ticktext=['0°', '30°', '60°', '90°', '120°'],
-                    tickvals=[0, 0.25, 0.5, 0.75, 1.0]
-                )
-            ),
-            name='Analyzed Voxels',
-            showlegend=False
-        ))
-    
-    # Update layout
-    fig.update_layout(
-        title=dict(
-            text=f"Orientation Analysis Along Y-axis (z={z_idx}, y={y_range[0]}-{y_range[-1]}, x={x_idx})",
-            y=0.95
-        ),
-        scene=dict(
-            aspectmode='data',
-            camera=dict(eye=dict(x=2, y=2, z=2)),
-            xaxis_title='X',
-            yaxis_title='Y',
-            zaxis_title='Z'
-        ),
-        width=1000, height=800,
-        showlegend=True
-    )
-    
-    return fig
+# # Example usage:
+# z_idx = 2
+# x_idx = 4
+# y_range = np.arange(0, 9)  # Analyze voxels y=1 through y=4
+# fig = visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, 
+#                                hs, ks, ls, z_idx, y_range, x_idx)
+# fig.show()
 
 
 
 # Example usage:
-z_idx, y_idx, x_idx = 2, 1, 4  # Example voxel coordinates
-fig = visualize_single_voxel_orientation(tomo_data, voxel_results, crystal_peaks, 
-                                       hs, ks, ls, z_idx, y_idx, x_idx)
-fig.show()
+
+# #12x12x12 pixel voxels
+# z_range = np.arange(2, 10)
+# y_range = np.arange(2, 10)
+# x_range = np.arange(5, 12)
+
+#15x15x15 pixel voxels
+z_range = np.arange(0, voxel_results['n_voxels'][0]-1)
+y_range = np.arange(0, voxel_results['n_voxels'][1]-1)
+x_range = np.arange(0, voxel_results['n_voxels'][2]-1)
+
+
+# With cyclic period
+cyclic_period=120
+fig = visualize_section_orientation(tomo_data, voxel_results, crystal_peaks, 
+                                  hs, ks, ls, z_range, y_range, x_range,threshold=0.1, sigma=0.5, cutoff=3, pixel_size=18, 
+                                  cyclic_period=cyclic_period)
+# Save as HTML file
+fig.write_html(f"/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/orientation_analysis_{voxel_size[0]}x{voxel_size[1]}x{voxel_size[2]}_cyclic_period_{cyclic_period}.html")
+#fig.show()
+
+# # Without cyclic period (raw angles)
+# fig = visualize_section_orientation(tomo_data, voxel_results, crystal_peaks, 
+#                                   hs, ks, ls, z_range, y_range, x_range,
+#                                   cyclic_period=None)
+# fig.show()
 
 
 
 
 
-# Example usage:
-z_idx = 2
-x_idx = 4
-y_range = np.arange(0, 9)  # Analyze voxels y=1 through y=4
-fig = visualize_line_orientation(tomo_data, voxel_results, crystal_peaks, 
-                               hs, ks, ls, z_idx, y_range, x_idx)
-fig.show()
+
+
+
+
+
+
+
+
+
 
 
 
