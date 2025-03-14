@@ -1858,6 +1858,89 @@ def plot_roi_frames_interactive(analyzers, roi_frames, df):
     # Initial plot
     update_plot(None)
 
+
+def plot_diffraction_patterns_interactive(dps):
+    """
+    Create interactive plot to view all diffraction patterns in an array
+    
+    Args:
+        dps (np.ndarray): Array of diffraction patterns with shape (n_frames, height, width)
+    """
+    # Get number of frames
+    n_frames = len(dps)
+    
+    # Create widgets
+    frame_slider = widgets.IntSlider(
+        value=0,
+        min=0,
+        max=n_frames-1,
+        step=1,
+        description='Frame:',
+        continuous_update=False
+    )
+    
+    # Add log scale toggle
+    log_scale = widgets.Checkbox(
+        value=True,
+        description='Log Scale',
+        disabled=False
+    )
+    
+    frame_info = widgets.HTML(
+        value="Frame info will appear here"
+    )
+    
+    plot_output = widgets.Output()
+    
+    def update_plot(change):
+        with plot_output:
+            plot_output.clear_output(wait=True)
+            
+            frame_idx = frame_slider.value
+            
+            # Update info
+            frame_info.value = f"""
+            <b>Frame</b>: {frame_idx}<br>
+            <b>Max Intensity</b>: {dps[frame_idx].max():.2e}<br>
+            <b>Min Intensity</b>: {dps[frame_idx].min():.2e}
+            """
+            
+            # Create new figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Plot with or without log scale
+            if log_scale.value:
+                im = ax.imshow(dps[frame_idx], 
+                             norm=colors.LogNorm())
+            else:
+                im = ax.imshow(dps[frame_idx])
+            
+            # Add colorbar
+            plt.colorbar(im, ax=ax, label='Intensity')
+            
+            # Add title and labels
+            ax.set_title(f'Frame {frame_idx}')
+            ax.set_xlabel('Pixel')
+            ax.set_ylabel('Pixel')
+            
+            plt.tight_layout()
+            plt.show()
+    
+    # Connect callbacks
+    frame_slider.observe(update_plot, names='value')
+    log_scale.observe(update_plot, names='value')
+    
+    # Create layout with controls side by side
+    controls = widgets.HBox([frame_slider, log_scale])
+    
+    # Display widgets and plot
+    display(widgets.VBox([controls, frame_info]))
+    display(plot_output)
+    
+    # Initial plot
+    update_plot(None)
+
+
 def normalize_roi_peak_intensities(analyzers, roi_frames, tolerance=8):
     """
     Calculate normalized peak intensities for ROI frames
