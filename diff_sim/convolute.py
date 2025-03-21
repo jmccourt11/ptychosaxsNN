@@ -1,4 +1,5 @@
 # coding: utf-8
+#%%
 from cupyx.scipy.signal import convolve2d as conv2
 from scipy.signal import convolve2d as conv2np
 import cupy as cp
@@ -12,6 +13,7 @@ from numpy.fft import fftn, fftshift
 import os
 from matplotlib import colors
 from scipy.io import loadmat
+import h5py
 plt.rcParams['image.cmap'] = 'jet'
 
 def flip180(arr):
@@ -35,26 +37,42 @@ def pad_with(vector, pad_width, iaxis, kwargs):
     vector[-pad_width[1]:] = pad_value
     
     
-save=False #save files
-plot=True
-dr='15' #save location
+save=True #save files
+plot=False
+dr='17' #save location
 data_location='/mnt/micdata2/12IDC/ptychosaxs/data/diff_sim/5/'
 
 data_location='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/5/'
-dpsize=512#1408
-endsize=512
+dpsize=256#512#1408
+endsize=256#512
 resize_probe=False
 
 with cp.cuda.Device(1): #select last GPU (i.e. 4 gpus, index of last one is 3)
     #probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly315/roi0_Ndp1024/MLc_L1_p10_g200_Ndp512_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp1024_mom0.5_pc200_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/Niter400.mat')['probe'].T[0].T
     #probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly318/roi0_Ndp256/MLc_L1_p10_g1000_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
     
-    #Cindy probe
-    probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly308/roi0_Ndp512/MLc_L1_p10_gInf_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLs_L1_p10_g100_Ndp512_pc100_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
+    # #Cindy probe
+    # probe=loadmat('/net/micdata/data2/12IDC/2024_Dec/results/RC_01_/fly308/roi0_Ndp512/MLc_L1_p10_gInf_Ndp256_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLs_L1_p10_g100_Ndp512_pc100_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/Niter1000.mat')['probe'].T[0].T
 
-    #Zhihua probe
-    probe=loadmat("/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly482/roi2_Ndp1024/MLc_L1_p10_gInf_Ndp256_mom0.5_pc100_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g400_Ndp512_mom0.5_pc400_noModelCon_bg0.1_vp4_vi_mm/Niter1000.mat")['probe'].T[0][0].T
-    print(probe.shape)
+    # #Zhihua probe
+    # probe=loadmat("/net/micdata/data2/12IDC/2024_Dec/results/JM02_3D_/fly482/roi2_Ndp1024/MLc_L1_p10_gInf_Ndp256_mom0.5_pc100_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g400_Ndp512_mom0.5_pc400_noModelCon_bg0.1_vp4_vi_mm/Niter1000.mat")['probe'].T[0][0].T
+    # print(probe.shape)
+    
+    #Zhihua probe ZCB_9_3D_
+    def load_zhihua_probe_ptychi(probe_path):
+        with h5py.File(probe_path, 'r') as f:
+            probe = f['probe'][()][0,0]
+        return probe
+    
+    probe_file='/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp256_LSQML_c1000_m0.5_p15_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5'
+    probe=load_zhihua_probe_ptychi(probe_file)
+    
+    if save:
+        np.save('/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/probe_{}.npy'.format(dr,probe_file.split('/')[-5]+probe_file.split('/')[-4]+'_'+probe_file.split('/')[-3]+'_'+probe_file.split('/')[-2]+'_'+probe_file.split('/')[-1]),probe)
+    fig,ax=plt.subplots(1,2)
+    ax[0].imshow(np.abs(probe))
+    ax[1].imshow(np.abs(np.fft.fftshift(np.fft.fft2(probe))),norm=colors.LogNorm())
+    plt.show()
     
     if resize_probe:
         probe=resize(probe,(dpsize,dpsize),preserve_range=True,anti_aliasing=True)
@@ -71,7 +89,7 @@ with cp.cuda.Device(1): #select last GPU (i.e. 4 gpus, index of last one is 3)
     #offset=1e-8
     probe=cp.asarray(probe)#+offset)
     
-    psf_pinhole=np.load('/home/beams/B304014/ptychosaxs/NN/probe_pinhole.npy')
+    psf_pinhole=np.load('/home/beams/PTYCHOSAXS/NN/probe_pinhole.npy')
     psf_pinhole=resize(psf_pinhole,(endsize,endsize),preserve_range=True,anti_aliasing=True)
 
     
@@ -159,3 +177,4 @@ with cp.cuda.Device(1): #select last GPU (i.e. 4 gpus, index of last one is 3)
 #        if plot:
 #            print('plotting')
 #            fig,ax=plt.subplots(2,2,layout='constrained');ax[0][0].imshow(np.abs(pinhole_DP)**2,norm=colors.LogNorm());ax[1][0].imshow(np.abs(conv_DP)**2,norm=colors.LogNorm());ax[0][1].imshow(np.abs(psf_pinhole)**2,norm=colors.LogNorm());ax[1][1].imshow(np.abs(ideal_DP)**2,norm=colors.LogNorm());plt.show()
+# %%

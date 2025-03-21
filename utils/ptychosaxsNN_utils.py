@@ -163,6 +163,20 @@ def preprocess_zhihua(dp,mask,center_decay=2):#,probe):
 
     return dp_pp,sf,bkg
 
+def preprocess_ZCB_9(dp,mask):
+    size=256
+    dp_pp=dp
+    dp_pp=np.asarray(dp_pp*mask)
+    dp_pp=np.asarray(resize(dp_pp,(size,size),preserve_range=True,anti_aliasing=True))
+    dp_pp=log10_custom(dp_pp)
+
+    sf=np.max(dp_pp)-np.min(dp_pp)
+    bkg=np.min(dp_pp)
+    dp_pp=np.asarray((dp_pp-bkg)/(sf))
+    dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
+    
+    return dp_pp,sf,bkg
+
 def generate_weight_mask(shape, center_decay):
     h, w = shape
     y, x = np.ogrid[:h, :w]
