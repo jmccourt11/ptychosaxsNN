@@ -13,7 +13,7 @@ from skimage.transform import resize
 from matplotlib import colors
 import random
 import h5py
-
+import pdb
 
 def hanning(image):
     #circular mask of radius=radius over image 
@@ -90,38 +90,38 @@ ob=load_zhihua_ptychi("/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp
 
 #%%
 ob_w=ob[0]
-plt.figure()
-plt.imshow(abs(ob_w))
-plt.show()
+# plt.figure()
+# plt.imshow(abs(ob_w))
+# plt.show()
 
 pb1=pb[0,0,:,:]
 plt.figure()
-plt.imshow(abs(pb1))
+plt.imshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
 plt.show()
 
 center=[ob_w.shape[0]//2,ob_w.shape[1]//2]
 center=[550,500]
 p_hw=int(pb1.shape[0]/2)
 ob_e=ob_w[center[0]-p_hw:center[0]+p_hw,center[1]-p_hw:center[1]+p_hw]
-plt.figure()
-plt.imshow(angle(ob_e))
-plt.show()
+# plt.figure()
+# plt.imshow(angle(ob_e))
+# plt.show()
 
 
-fig, ax=plt.subplots()
-ax.imshow(angle(ob_e),cmap='gray')
-ax.imshow(abs(pb1),cmap='Reds', alpha=0.5)
-plt.show()
+# fig, ax=plt.subplots()
+# ax.imshow(angle(ob_e),cmap='gray')
+# ax.imshow(abs(pb1),cmap='Reds', alpha=0.5)
+# plt.show()
 
 psi_k=spf.fftshift(spf.fft2(pb1*ob_e))
-plt.figure()
-plt.imshow(log(abs(psi_k)**2+1))
-plt.show()
+# plt.figure()
+# plt.imshow(log(abs(psi_k)**2+1))
+# plt.show()
 
 psi_k2=spf.fftshift(spf.fft2(pb1*ob_e/abs(ob_e)))
-plt.figure()
-plt.imshow(log(abs(psi_k2)**2+1))
-plt.show()
+# plt.figure()
+# plt.imshow(log(abs(psi_k2)**2+1))
+# plt.show()
 #%%
 
 ###################################################################################
@@ -157,26 +157,31 @@ radius = lattice_spacing/2  # Radius of the spherical nanoparticles
 #total_intensity=np.zeros((256,256))
 #total_intensity_conv=np.zeros((256,256))
 count=1
-plot_all=True
-plot=True
-total_plot=True
-total=True
+plot_all=False
+plot=False
+total_plot=False
+total=False
 nsteps=3
-nscans=1
+nscans=1200
+num_simdps=nsteps**2*nscans
 random_placed=False
-save=False
-save_total=False
+save=True
+save_total=True
 noise_on=True
-dr=111111
+dr=30
 dpsize=256
-resize_pbp=True
+resize_pbp=False#True
 
 #load pinhole
-pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex.npy')
+pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex_256x256.npy')
+#pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex.npy')
+
 if resize_pbp:
-    pbp_real = resize(np.real(pbp), (dpsize,dpsize), preserve_range=True, anti_aliasing=True)
-    pbp_imag = resize(np.imag(pbp), (dpsize,dpsize), preserve_range=True, anti_aliasing=True)
-    pbp = pbp_real + 1j * pbp_imag
+    # THIS NEEDS TO BE THROUGHLY CHECKED
+    pbp=resize(np.abs(np.real(pbp)+np.imag(pbp)),(256,256),preserve_range=True,anti_aliasing=True)
+    # pbp_real = resize(np.real(pbp), (dpsize,dpsize), preserve_range=True, anti_aliasing=True)
+    # pbp_imag = resize(np.imag(pbp), (dpsize,dpsize), preserve_range=True, anti_aliasing=True)
+    # pbp = pbp_real + 1j * pbp_imag
 #matshow(abs(fft2(pbp))**2)
 #plt.show()
 
@@ -187,17 +192,34 @@ psf_pinhole=cp.abs(cp.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole.npy'))
 amplitude_3d=np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy')
 
 
+# Define scan pattern - probe moves across the lattice
+# Start position in the padded grid - centered with offset
+center_x = 512  # Center of the grid
+center_y = 512
+# Control parameter for scan concentration (smaller = more concentrated to center)
+# Range: 0.1 (very close to center) to 1.0 (full lattice scan)
+center_concentration = 0.3  # Adjust this value to control offset
+scan_range = int(lattice_size * center_concentration)  # Adjustable scan range
 
-for l in range(0,nscans):
+# Calculate starting position with offset to center the scan pattern
+start_x = center_x - scan_range // 2
+start_y = center_y - scan_range // 2
+
+# Step size for scanning (smaller steps to stay closer to center)
+step_size_x = scan_range // (nsteps-1) if nsteps > 1 else 0
+step_size_y = scan_range // (nsteps-1) if nsteps > 1 else 0
+
+for l in tqdm(range(0,nscans)):
     total_intensity=np.zeros((dpsize,dpsize))
     total_intensity_conv=np.zeros((dpsize,dpsize))
     rotation_angles = ((random.randint(0,90), random.randint(0,90), random.randint(0,90)))  # Rotation angles in degrees (alpha, beta, gamma)
-    rotation_angles = ((0, 0, 0))
+    # rotation_angles = ((0, 0, 0))
     amplitude_3d_rotated = rotate(amplitude_3d, angle=rotation_angles[0], axes=(1, 2), reshape=False)
     amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[1], axes=(0, 2), reshape=False)
     amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[2], axes=(0, 1), reshape=False)
-    for k in tqdm(range(0,nsteps)):
-        for i in tqdm(range(0,nsteps)):
+    cstart=count
+    for k in range(0,nsteps):
+        for i in range(0,nsteps):
             
             # Rotate the 3D amplitude grid
             # rotation_angles = ((random.randint(0,90), random.randint(0,90), random.randint(0,90)))  # Rotation angles in degrees (alpha, beta, gamma)
@@ -279,11 +301,17 @@ for l in range(0,nscans):
                 ob_w_2=particles_padded
                 ob_e_2=ob_w_2[center[0]-p_hw:center[0]+p_hw,center[1]-p_hw:center[1]+p_hw]
             else:
-                #center=[256+lattice_size//4+i*512//nsteps,256+lattice_size//4+k*512//nsteps]
-                center=[dpsize//2+i*dpsize//nsteps,dpsize//2+k*dpsize//nsteps]
-                ob_w_2=particles_padded
-                ob_e_2=ob_w_2[center[0]-p_hw:center[0]+p_hw,center[1]-p_hw:center[1]+p_hw]
-            
+                # Calculate probe position for this scan point
+                probe_center_x = start_x + i * step_size_x
+                probe_center_y = start_y + k * step_size_y
+                
+                # Extract the region where the probe illuminates the object
+                ob_w_2 = particles_padded
+                ob_e_2 = ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw, 
+                                probe_center_y-p_hw:probe_center_y+p_hw] * \
+                        hanning(ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw,
+                                    probe_center_y-p_hw:probe_center_y+p_hw])
+        
             if plot_all:
                 matshow(angle(ob_e_2),cmap='gray')
                 matshow(abs(pb1),cmap='Reds')
@@ -300,10 +328,13 @@ for l in range(0,nscans):
                 plt.show()
 
 
-            
+            # THIS NEEDS TO BE THROUGHLY CHECKED
             psi_k_2_ideal=spf.fft2(ob_e_2*pbp)
+            #psi_k_2_ideal=spf.fftshift(spf.fft2(ob_e_2*pbp))
+            
+            
             if plot_all:
-                matshow(log(abs(psi_k_2_ideal)**2+1))
+                matshow(log(abs(psi_k_2_ideal)**2))
                 plt.show()
             #psi_k_2_ideal=spf.fftshift(spf.fft2(ob_e_2))
             #matshow(log(abs(psi_k_2_ideal)**2+1))
@@ -322,8 +353,8 @@ for l in range(0,nscans):
             
 
             psi_k_2=spf.fftshift(spf.fft2(pb1*ob_e_2))
-        #    matshow(log(abs(psi_k_2)**2+1))
-        #    plt.show()
+            # matshow(log(abs(psi_k_2)**2))
+            # plt.show()
             
             if plot:
                 fig,ax=plt.subplots(2,3,figsize=(15,5))
@@ -351,10 +382,14 @@ for l in range(0,nscans):
             if save:
                 np.savez(filename,pinholeDP=pinhole_DP,convDP=conv_DP,obj=ob_e_2,probe=pb1)
                 print(f"saved: {filename}")
+
+            count+=1
+    cend=count-1
     if save_total:
-        np.savez(filename,pinholeDP=total_intensity,convDP=total_intensity_conv,obj=ob_e_2,probe=pb1)
-        print(f"saved: {filename}")
-    count+=1
+        filename_total='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/output_hanning_conv_TOTAL_{:05d}_{:05d}.npz'.format(dr,cstart,cend)
+        
+        np.savez(filename_total,pinholeDP=total_intensity,convDP=total_intensity_conv,probe=pb1)
+        print(f"saved: {filename_total}")
         
     # Plot sum of scanned diffraction patterns
     if total_plot:
