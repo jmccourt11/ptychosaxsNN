@@ -247,7 +247,121 @@ def plot_and_save_scan(dps,ptycho_scan,scanx=20,scany=15):
     fig.colorbar(im, cax=cbar_ax)
     plt.show()
     return inputs,outputs,sfs,bkgs
+
+
+def check_scan_completeness(base_path, scan_name, scan_id, start_i=1, end_i=29, start_j=1, end_j=36):
+    """
+    Check if all files in a scan sequence exist and identify unexpected files.
+    """
+    expected_files = []
+    missing_files = []
+    expected_filenames = set()
+    
+    # Generate all expected filenames
+    for i in range(start_i, end_i + 1):
+        for j in range(start_j, end_j + 1):
+            filename = f"{scan_name}_{scan_id}_{i:05d}_{j:05d}.h5"
+            full_path = os.path.join(base_path, filename)
+            expected_files.append(full_path)
+            expected_filenames.add(filename)
+    
+    # Check which files exist
+    for file_path in expected_files:
+        if not os.path.exists(file_path):
+            missing_files.append(file_path)
+    
+    total_expected = len(expected_files)
+    found = total_expected - len(missing_files)
+    
+    # Get a list of all actual files for comparison
+    actual_files = glob.glob(os.path.join(base_path, f"{scan_name}_{scan_id}_*.h5"))
+    
+    # Find unexpected files (files that exist but don't match the expected pattern)
+    unexpected_files = []
+    for file_path in actual_files:
+        filename = os.path.basename(file_path)
+        if filename not in expected_filenames:
+            unexpected_files.append(file_path)
+    
+    return {
+        'complete': len(missing_files) == 0,
+        'total_expected': total_expected,
+        'found': found,
+        'missing': missing_files,
+        'completion_percentage': (found / total_expected) * 100 if total_expected > 0 else 0,
+        'actual_file_count': len(actual_files),
+        'unexpected_files': unexpected_files
+    }
+
+
+def plot_full_scan(dps, mask, model, scanx=36, scany=29, dpsize=256, center=(517,575)):
+    """
+    Plot diffraction patterns from a 2D scan more efficiently.
+    """
+    # Create figure and axes once
+    fig, axs = plt.subplots(scany, scanx, figsize=(scanx, scany))
+    fig.subplots_adjust(hspace=0, wspace=0)
+    
+    # Handle different dimensions of axs
+    if scany == 1 and scanx == 1:
+        axs = np.array([[axs]])
+    elif scany == 1:
+        axs = np.array([axs])
+    elif scanx == 1:
+        axs = np.array([[ax] for ax in axs])
+    
+    # Pre-calculate indices for cropping
+    y_start = center[0] - dpsize//2
+    y_end = center[0] + dpsize//2
+    x_start = center[1] - dpsize//2
+    x_end = center[1] + dpsize//2
+    
+    count = 0
+    inputs = []
+    outputs = []
+    sfs = []
+    bkgs = []
+    
+    # Turn off all axes at once
+    for ax_row in axs:
+        for ax in ax_row:
+            ax.axis('off')
+    
+    # Process in batches for better performance
+    try:
+        # Use tqdm for progress tracking
+        pbar = tqdm(total=scanx*scany)
         
+        for i in range(scany):
+            for j in range(scanx):
+                if count >= len(dps):
+                    break
+                    
+                # Crop the diffraction pattern
+                dp_count = dps[count][y_start:y_end, x_start:x_end]
+                
+                # Plot the result
+                im = axs[i][j].imshow(dp_count, cmap='jet',norm=colors.LogNorm())
+                
+                count += 1
+                pbar.update(1)
+                
+        pbar.close()
+                
+    except KeyboardInterrupt:
+        print("\nProcessing interrupted by user (Ctrl+C)")
+        # Continue with plotting what we have so far
+    
+    # Only add colorbar if we processed at least one image
+    if count > 0:
+        cbar_ax = fig.add_axes([0.95, 0.15, 0.05, 0.7])
+        fig.colorbar(im, cax=cbar_ax)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return 0
+
 def resize_dp(dp):
     return resize(dp,(256,256),preserve_range=True,anti_aliasing=True)
     #return resize(dp,(1408,1408),preserve_range=True,anti_aliasing=True)

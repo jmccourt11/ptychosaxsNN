@@ -108,10 +108,10 @@ ob_e=ob_w[center[0]-p_hw:center[0]+p_hw,center[1]-p_hw:center[1]+p_hw]
 # plt.show()
 
 
-# fig, ax=plt.subplots()
-# ax.imshow(angle(ob_e),cmap='gray')
-# ax.imshow(abs(pb1),cmap='Reds', alpha=0.5)
-# plt.show()
+fig, ax=plt.subplots()
+ax.imshow(angle(ob_e),cmap='gray')
+ax.imshow(abs(pb1),cmap='Reds', alpha=0.5)
+plt.show()
 
 psi_k=spf.fftshift(spf.fft2(pb1*ob_e))
 # plt.figure()
@@ -157,18 +157,18 @@ radius = lattice_spacing/2  # Radius of the spherical nanoparticles
 #total_intensity=np.zeros((256,256))
 #total_intensity_conv=np.zeros((256,256))
 count=1
-plot_all=False
-plot=False
-total_plot=False
-total=False
+plot_all=True
+plot=True
+total_plot=True
+total=True
 nsteps=3
-nscans=1200
+nscans=1
 num_simdps=nsteps**2*nscans
 random_placed=False
-save=True
-save_total=True
-noise_on=True
-dr=30
+save=False
+save_total=False
+noise_on=False
+dr=310000
 dpsize=256
 resize_pbp=False#True
 
@@ -198,7 +198,7 @@ center_x = 512  # Center of the grid
 center_y = 512
 # Control parameter for scan concentration (smaller = more concentrated to center)
 # Range: 0.1 (very close to center) to 1.0 (full lattice scan)
-center_concentration = 0.3  # Adjust this value to control offset
+center_concentration = 0.35  # Adjust this value to control offset
 scan_range = int(lattice_size * center_concentration)  # Adjustable scan range
 
 # Calculate starting position with offset to center the scan pattern
@@ -374,13 +374,25 @@ for l in tqdm(range(0,nscans)):
             if total:
                 total_intensity+=resize(abs(psi_k_2_ideal)**2,(256,256),preserve_range=True,anti_aliasing=True)
                 total_intensity_conv+=resize(abs(psi_k_2)**2,(256,256),preserve_range=True,anti_aliasing=True)
-            conv_DP=resize(abs(psi_k_2)**2,(256,256),preserve_range=True,anti_aliasing=True)
-            pinhole_DP=resize(abs(psi_k_2_ideal)**2,(256,256),preserve_range=True,anti_aliasing=True)
+            # conv_DP=resize(abs(psi_k_2)**2,(256,256),preserve_range=True,anti_aliasing=True)
+            # pinhole_DP=resize(abs(psi_k_2_ideal)**2,(256,256),preserve_range=True,anti_aliasing=True)
+            # pinhole_DP_extra_conv=resize(abs(pinhole_DP)**2,(256,256),preserve_range=True,anti_aliasing=True)
+            
+            conv_DP=abs(psi_k_2)**2
+            pinhole_DP_extra_conv=abs(pinhole_DP)**2
+            pinhole_DP=abs(psi_k_2_ideal)**2
+
+            
+            # fig,ax=plt.subplots(1,3)
+            # ax[0].imshow(conv_DP,norm=colors.LogNorm(),cmap='jet')
+            # ax[1].imshow(pinhole_DP,norm=colors.LogNorm(),cmap='jet')
+            # ax[2].imshow(pinhole_DP_extra_conv,norm=colors.LogNorm(),cmap='jet')
+            # plt.show()
             
             filename='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/output_hanning_conv_{:05d}.npz'.format(dr,count)
             
             if save:
-                np.savez(filename,pinholeDP=pinhole_DP,convDP=conv_DP,obj=ob_e_2,probe=pb1)
+                np.savez(filename,pinholeDP=pinhole_DP,pinholeDP_extra_conv=pinhole_DP_extra_conv,convDP=conv_DP,obj=ob_e_2,probe=pb1)
                 print(f"saved: {filename}")
 
             count+=1
