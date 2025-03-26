@@ -27,6 +27,7 @@ from ipywidgets import interact, FloatSlider, Button, VBox, Output
 import ipywidgets as widgets
 import pandas as pd
 from scipy.ndimage import gaussian_filter
+import glob
 
 def log10_custom(arr):
     # Create a mask for positive values
@@ -293,8 +294,7 @@ def check_scan_completeness(base_path, scan_name, scan_id, start_i=1, end_i=29, 
         'unexpected_files': unexpected_files
     }
 
-
-def plot_full_scan(dps, mask, model, scanx=36, scany=29, dpsize=256, center=(517,575)):
+def plot_full_scan(dps, preprocess_func,mask, model, scanx=36, scany=29, dpsize=256, center=(517,575)):
     """
     Plot diffraction patterns from a 2D scan more efficiently.
     """
@@ -340,11 +340,96 @@ def plot_full_scan(dps, mask, model, scanx=36, scany=29, dpsize=256, center=(517
                 # Crop the diffraction pattern
                 dp_count = dps[count][y_start:y_end, x_start:x_end]
                 
+                
+                resultT, sfT, bkgT = preprocess_func(dp_count,mask)
+                
+                
                 # Plot the result
                 im = axs[i][j].imshow(dp_count, cmap='jet',norm=colors.LogNorm())
+                #im = axs[i][j].imshow(model_new(resultT.to(device=device, dtype=torch.float)).detach().to("cpu").numpy()[0][0], cmap='jet')#,norm=colors.LogNorm())
                 
                 count += 1
                 pbar.update(1)
+                
+        pbar.close()
+                
+    except KeyboardInterrupt:
+        print("\nProcessing interrupted by user (Ctrl+C)")
+        # Continue with plotting what we have so far
+    
+    # Only add colorbar if we processed at least one image
+    if count > 0:
+        cbar_ax = fig.add_axes([0.95, 0.15, 0.05, 0.7])
+        fig.colorbar(im, cax=cbar_ax)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return 0
+
+def plot_full_fly_scan(dps, preprocess_func, mask, model, scanx=36, scany=29, dpsize=256, center=(517,575)):
+    """
+    Plot diffraction patterns from a 2D scan more efficiently.
+    Handles serpentine/fly scan pattern where alternate rows go in opposite directions.
+    """
+    # Create figure and axes once
+    fig, axs = plt.subplots(scany, scanx, figsize=(scanx, scany))
+    fig.subplots_adjust(hspace=0, wspace=0)
+    
+    # Handle different dimensions of axs
+    if scany == 1 and scanx == 1:
+        axs = np.array([[axs]])
+    elif scany == 1:
+        axs = np.array([axs])
+    elif scanx == 1:
+        axs = np.array([[ax] for ax in axs])
+    
+    # Pre-calculate indices for cropping
+    y_start = center[0] - dpsize//2
+    y_end = center[0] + dpsize//2
+    x_start = center[1] - dpsize//2
+    x_end = center[1] + dpsize//2
+    
+    count = 0
+    inputs = []
+    outputs = []
+    sfs = []
+    bkgs = []
+    
+    # Turn off all axes at once
+    for ax_row in axs:
+        for ax in ax_row:
+            ax.axis('off')
+    
+    # Process in batches for better performance
+    try:
+        # Use tqdm for progress tracking
+        pbar = tqdm(total=min(scanx*scany, len(dps)))
+        
+        for i in range(scany):
+            # For even rows (0, 2, 4...), go left to right
+            # For odd rows (1, 3, 5...), go right to left
+            if i % 2 == 0:
+                j_range = range(scanx)  # Left to right
+            else:
+                j_range = range(scanx-1, -1, -1)  # Right to left
+                
+            for j in j_range:
+                if count < len(dps):  # Check if we still have data to plot
+                    # Crop the diffraction pattern
+                    dp_count = dps[count][y_start:y_end, x_start:x_end]
+                    
+                    resultT, sfT, bkgT = preprocess_func(dp_count, mask)
+                    
+                    # Plot the result
+                    im = axs[i][j].imshow(dp_count, cmap='jet', norm=colors.LogNorm())
+                    #im = axs[i][j].imshow(model_new(resultT.to(device=device, dtype=torch.float)).detach().to("cpu").numpy()[0][0], cmap='jet')#,norm=colors.LogNorm())
+                    
+                    count += 1
+                    pbar.update(1)
+                else:
+                    # No more data to plot
+                    axs[i][j].text(0.5, 0.5, 'No data', ha='center', va='center')
                 
         pbar.close()
                 
@@ -558,7 +643,7 @@ def load_h5_scan_to_npy(file_path,scan,plot=True,point_data=True):
     # scan = 1125 (e.g.)
     dps=[]
     file_path_new=find_directories_with_number(file_path,scan)[0]
-    for filename in tqdm(os.listdir(file_path_new)[:-1]):
+    for filename in tqdm(os.listdir(file_path_new)[:]):#-1]):
         filename = file_path_new / filename
         #print(filename)
         #print(read_hdf5_file(filename).keys())

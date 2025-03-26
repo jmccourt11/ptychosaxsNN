@@ -80,7 +80,6 @@ def vignette(image):
 # plt.show()
 
 
-# For Cindy data
 def load_zhihua_ptychi(path,key):
     with h5py.File(path, 'r') as f:
         obj = f[key][()]
@@ -88,16 +87,31 @@ def load_zhihua_ptychi(path,key):
 pb=load_zhihua_ptychi("/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp256_LSQML_c1000_m0.5_p15_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5","probe")
 ob=load_zhihua_ptychi("/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp256_LSQML_c1000_m0.5_p15_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5","object")
 
-#%%
-ob_w=ob[0]
-# plt.figure()
-# plt.imshow(abs(ob_w))
-# plt.show()
 
-pb1=pb[0,0,:,:]
-plt.figure()
-plt.imshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+
+
+ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
+ob_w=ob['object']
+matshow(abs(ob_w))
 plt.show()
+
+pb=ob['probe']
+pb1=pb[:,:,0,0]
+matshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+plt.show()
+
+#%%
+
+
+# ob_w=ob[0]
+# # plt.figure()
+# # plt.imshow(abs(ob_w))
+# # plt.show()
+
+# pb1=pb[0,0,:,:]
+# plt.figure()
+# plt.imshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+# plt.show()
 
 center=[ob_w.shape[0]//2,ob_w.shape[1]//2]
 center=[550,500]
@@ -157,23 +171,24 @@ radius = lattice_spacing/2  # Radius of the spherical nanoparticles
 #total_intensity=np.zeros((256,256))
 #total_intensity_conv=np.zeros((256,256))
 count=1
-plot_all=True
-plot=True
-total_plot=True
-total=True
+plot_all=False
+plot=False  
+total_plot=False
+total=False
 nsteps=3
-nscans=1
+nscans=1200
 num_simdps=nsteps**2*nscans
 random_placed=False
-save=False
-save_total=False
+save=True
+save_total=True
 noise_on=False
-dr=310000
+dr=32
 dpsize=256
 resize_pbp=False#True
 
 #load pinhole
-pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex_256x256.npy')
+#pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex_256x256.npy')
+pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex_256x256_bw0.75.npy')
 #pbp=np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex.npy')
 
 if resize_pbp:
@@ -198,7 +213,7 @@ center_x = 512  # Center of the grid
 center_y = 512
 # Control parameter for scan concentration (smaller = more concentrated to center)
 # Range: 0.1 (very close to center) to 1.0 (full lattice scan)
-center_concentration = 0.35  # Adjust this value to control offset
+center_concentration = 0.5  # Adjust this value to control offset
 scan_range = int(lattice_size * center_concentration)  # Adjustable scan range
 
 # Calculate starting position with offset to center the scan pattern
