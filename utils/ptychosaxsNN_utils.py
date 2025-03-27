@@ -447,6 +447,81 @@ def plot_full_fly_scan(dps, preprocess_func, mask, model, scanx=36, scany=29, dp
     
     return 0
 
+def plot_absorption_fly_scan(dps, preprocess_func, mask, model, scanx=36, scany=29, dpsize=256, center=(517,575)):
+    """
+    Plot absorption values from a 2D scan in a grid layout.
+    Handles serpentine/fly scan pattern where alternate rows go in opposite directions.
+    """
+    # Create figure and axes once
+    fig, axs = plt.subplots(1, 1, figsize=(10, 8))
+    
+    # Pre-calculate indices for cropping
+    y_start = center[0] - dpsize//2
+    y_end = center[0] + dpsize//2
+    x_start = center[1] - dpsize//2
+    x_end = center[1] + dpsize//2
+    
+    # Create a 2D array to store absorption values
+    absorption_map = np.zeros((scany, scanx))
+    
+    count = 0
+    
+    # Process diffraction patterns
+    try:
+        # Use tqdm for progress tracking
+        pbar = tqdm(total=min(scanx*scany, len(dps)))
+        
+        for i in range(scany):
+            # For even rows (0, 2, 4...), go left to right
+            # For odd rows (1, 3, 5...), go right to left
+            if i % 2 == 0:
+                j_range = range(scanx)  # Left to right
+            else:
+                j_range = range(scanx-1, -1, -1)  # Right to left
+            
+            for j in j_range:
+                if count < len(dps):  # Check if we still have data to plot
+                    # Crop the diffraction pattern
+                    dp_count = dps[count][y_start:y_end, x_start:x_end]
+                    
+                    # Process the diffraction pattern
+                    resultT, sfT, bkgT = preprocess_func(dp_count, mask)
+                    
+                    # Calculate absorption value (total intensity or other metric)
+                    # Option 1: Use the sum of the diffraction pattern as absorption
+                    absorption = np.sum(dp_count)
+                    
+                    # Option 2: Use the model output if it represents absorption
+                    # model_output = model(resultT.to(device=device, dtype=torch.float)).detach().to("cpu").numpy()[0][0]
+                    # absorption = np.mean(model_output)  # or some other metric
+                    
+                    # Store the absorption value
+                    absorption_map[i, j] = absorption
+                    
+                    count += 1
+                    pbar.update(1)
+                
+        pbar.close()
+                
+    except KeyboardInterrupt:
+        print("\nProcessing interrupted by user (Ctrl+C)")
+    
+    # Plot the absorption map
+    im = axs.imshow(absorption_map, cmap='viridis')
+    axs.set_title('Absorption Map')
+    axs.set_xlabel('X position')
+    axs.set_ylabel('Y position')
+    
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=axs)
+    cbar.set_label('Absorption (a.u.)')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return absorption_map
+
+
 def resize_dp(dp):
     return resize(dp,(256,256),preserve_range=True,anti_aliasing=True)
     #return resize(dp,(1408,1408),preserve_range=True,anti_aliasing=True)
