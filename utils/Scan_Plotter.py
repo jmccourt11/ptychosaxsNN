@@ -61,16 +61,19 @@ class Scan_Plotter:
     
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-    def get_pattern(self, idx, use_model=True):
+    def get_pattern(self, idx, mode='model'):
         """
-        Get a processed or raw diffraction pattern.
+        Get a diffraction pattern in various processing stages.
         
         Parameters:
         -----------
         idx : int
             Index of the diffraction pattern
-        use_model : bool
-            Whether to apply the model (deconvolution)
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
+                'raw': Original diffraction pattern
+                'preprocessed': After preprocessing (model input)
+                'model': After model processing (deconvolved)
             
         Returns:
         --------
@@ -78,20 +81,34 @@ class Scan_Plotter:
             The processed or raw diffraction pattern
         """
         # Check if we've already processed this pattern
-        cache_key = (idx, use_model)
+        cache_key = (idx, mode)
         if cache_key in self.processed_cache:
             return self.processed_cache[cache_key]
         
         # Crop the diffraction pattern
         dp = self.dps[idx][self.y_start:self.y_end, self.x_start:self.x_end]
         
-        if use_model and self.preprocess_func is not None and self.model is not None:
-            # Process the diffraction pattern
-            resultT, _, _ = self.preprocess_func(dp, self.mask)
-            pattern = self.model(resultT.to(device=self.device, dtype=torch.float)).detach().to("cpu").numpy()[0][0]
-        else:
+        if mode == 'raw':
             # Return the raw pattern
             pattern = dp
+        elif mode in ['preprocessed', 'model'] and self.preprocess_func is not None:
+            # Process the diffraction pattern
+            resultT, _, _ = self.preprocess_func(dp, self.mask)
+            
+            if mode == 'preprocessed':
+                # Return the preprocessed pattern (model input)
+                pattern = resultT.detach().to("cpu").numpy()[0][0]
+            elif mode == 'model' and self.model is not None:
+                # Apply the model and return the output
+                pattern = self.model(resultT.to(device=self.device, dtype=torch.float)).detach().to("cpu").numpy()[0][0]
+            else:
+                # Fallback to raw if model is None
+                pattern = dp
+                print(f"Warning: Model not available, returning raw pattern for idx {idx}")
+        else:
+            # Fallback to raw for unknown mode
+            pattern = dp
+            print(f"Warning: Invalid mode '{mode}' or preprocessing function not available, returning raw pattern for idx {idx}")
         
         # Cache the result
         self.processed_cache[cache_key] = pattern
@@ -120,14 +137,14 @@ class Scan_Plotter:
                                         inner_radius=inner_radius, 
                                         outer_radius=outer_radius)
     
-    def plot_full_scan(self, use_model=True, log_scale=False):
+    def plot_full_scan(self, mode='model', log_scale=False):
         """
         Plot all diffraction patterns in a grid.
         
         Parameters:
         -----------
-        use_model : bool
-            Whether to plot model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
             
@@ -168,7 +185,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, use_model)
+                        pattern = self.get_pattern(count, mode)
                         
                         # Plot the pattern with optional log scale
                         if log_scale:
@@ -198,14 +215,14 @@ class Scan_Plotter:
         
         return fig
     
-    def plot_absorption_map(self, use_model=True, log_scale=False):
+    def plot_absorption_map(self, mode='model', log_scale=False):
         """
         Plot a map of total absorption/intensity across the scan.
         
         Parameters:
         -----------
-        use_model : bool
-            Whether to use model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
             
@@ -235,7 +252,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, use_model)
+                        pattern = self.get_pattern(count, mode)
                         
                         # Calculate absorption (mean intensity)
                         absorption = np.mean(pattern)
@@ -270,7 +287,7 @@ class Scan_Plotter:
         return absorption_map
     
     def plot_azimuthal_segment(self, segment_idx=0, num_segments=8, 
-                              inner_radius=0, outer_radius=None, use_model=True, log_scale=False):
+                              inner_radius=0, outer_radius=None, mode='model', log_scale=False):
         """
         Plot integrated intensity of a specific azimuthal segment.
         
@@ -282,8 +299,8 @@ class Scan_Plotter:
             Total number of segments
         inner_radius, outer_radius : float
             Radial constraints for the segment
-        use_model : bool
-            Whether to use model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
             
@@ -317,7 +334,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, use_model)
+                        pattern = self.get_pattern(count, mode)
                         
                         # Calculate segment intensity
                         segment_intensity = np.sum(pattern * segment_mask)
@@ -353,7 +370,7 @@ class Scan_Plotter:
     
     def plot_all_azimuthal_segments(self, num_segments=8, inner_radius=0, 
                                    outer_radius=None, example_idx=None, 
-                                   use_model=True, log_scale=False):
+                                   mode='model', log_scale=False):
         """
         Plot all azimuthal segments with optional insets.
         
@@ -365,8 +382,8 @@ class Scan_Plotter:
             Radial constraints for the segments
         example_idx : int, optional
             Index of an example pattern to show in insets
-        use_model : bool
-            Whether to use model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
             
@@ -387,7 +404,7 @@ class Scan_Plotter:
         
         # Process example pattern for insets if requested
         if example_idx is not None:
-            example_pattern = self.get_pattern(example_idx, use_model)
+            example_pattern = self.get_pattern(example_idx, mode)
         
         # Process all patterns once
         processed_patterns = []
@@ -406,7 +423,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, use_model)
+                        pattern = self.get_pattern(count, mode)
                         
                         # Store the pattern with its position
                         processed_patterns.append((i, j, pattern))
@@ -468,7 +485,7 @@ class Scan_Plotter:
         
         return fig
     
-    def plot_radial_profile(self, idx=None, use_model=True, num_bins=100, max_radius=None, 
+    def plot_radial_profile(self, idx=None, mode='model', num_bins=100, max_radius=None, 
                            log_scale=True, azimuthal_range=None):
         """
         Plot the radial intensity profile of a diffraction pattern.
@@ -477,8 +494,8 @@ class Scan_Plotter:
         -----------
         idx : int or None
             Index of the diffraction pattern to analyze. If None, averages all patterns.
-        use_model : bool
-            Whether to use model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         num_bins : int
             Number of radial bins
         max_radius : float or None
@@ -528,7 +545,7 @@ class Scan_Plotter:
         # Process patterns and calculate radial profile
         if idx is not None:
             # Single pattern mode
-            pattern = self.get_pattern(idx, use_model)
+            pattern = self.get_pattern(idx, mode)
             
             # Calculate radial profile
             radial_profile = np.zeros(num_bins)
@@ -542,7 +559,7 @@ class Scan_Plotter:
                 else:
                     radial_profile[i] = 0
             
-            title = f"Radial Profile - {'Processed' if use_model else 'Raw'} Pattern {idx}"
+            title = f"Radial Profile - {'Processed' if mode in ['preprocessed', 'model'] else 'Raw'} Pattern {idx}"
         
         else:
             # Average all patterns mode
@@ -563,7 +580,7 @@ class Scan_Plotter:
                     for j in j_range:
                         if count < len(self.dps):
                             # Get the pattern
-                            pattern = self.get_pattern(count, use_model)
+                            pattern = self.get_pattern(count, mode)
                             
                             # Accumulate radial profile
                             for i in range(num_bins):
@@ -583,7 +600,7 @@ class Scan_Plotter:
                 if count > 0:
                     radial_profile /= count
                 
-                title = f"Average Radial Profile - {'Processed' if use_model else 'Raw'} Patterns"
+                title = f"Average Radial Profile - {'Processed' if mode in ['preprocessed', 'model'] else 'Raw'} Patterns"
                 
             except KeyboardInterrupt:
                 print("\nProcessing interrupted by user (Ctrl+C)")
@@ -613,7 +630,7 @@ class Scan_Plotter:
         
         return fig, radial_profile, bin_centers
     
-    def plot_radial_profile_map(self, radius_range, use_model=True, num_bins=10, log_scale=False):
+    def plot_radial_profile_map(self, radius_range, mode='model', num_bins=10, log_scale=False):
         """
         Plot a map of integrated intensity within a specific radius range.
         
@@ -621,8 +638,8 @@ class Scan_Plotter:
         -----------
         radius_range : tuple
             (min_radius, max_radius) range to integrate
-        use_model : bool
-            Whether to use model-processed patterns
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
         num_bins : int
             Number of radial bins within the range
         log_scale : bool
@@ -671,7 +688,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, use_model)
+                        pattern = self.get_pattern(count, mode)
                         
                         # Calculate intensity in each radial bin
                         for bin_idx in range(num_bins):
@@ -727,26 +744,26 @@ class Scan_Plotter:
 #                        scanx=36, scany=29)
 
 # # Plot full scan with raw patterns
-# plotter.plot_full_scan(use_model=False)
+# plotter.plot_full_scan(mode='raw')
 
 # # Plot absorption map with deconvolved patterns
-# absorption_map = plotter.plot_absorption_map(use_model=True)
+# absorption_map = plotter.plot_absorption_map(mode='model')
 
 # # Plot a specific azimuthal segment
 # segment_map = plotter.plot_azimuthal_segment(segment_idx=2, num_segments=8, 
 #                                             inner_radius=10, outer_radius=100,
-#                                             use_model=True)
+#                                             mode='model')
 
 # # Plot all azimuthal segments with insets
 # plotter.plot_all_azimuthal_segments(num_segments=8, inner_radius=10, 
 #                                    outer_radius=100, example_idx=664,
-#                                    use_model=True)
+#                                    mode='model')
 
 # # Plot radial profile for a specific diffraction pattern
-# fig, profile, bins = plotter.plot_radial_profile(idx=664, use_model=True, num_bins=100)
+# fig, profile, bins = plotter.plot_radial_profile(idx=664, mode='model', num_bins=100)
 
 # # Plot average radial profile across all patterns
-# fig, avg_profile, bins = plotter.plot_radial_profile(idx=None, use_model=True, num_bins=100)
+# fig, avg_profile, bins = plotter.plot_radial_profile(idx=None, mode='model', num_bins=100)
 
 # # Plot radial profile maps for specific q-ranges
-# fig, radial_maps = plotter.plot_radial_profile_map(radius_range=(10, 100), use_model=True, num_bins=8)
+# fig, radial_maps = plotter.plot_radial_profile_map(radius_range=(10, 100), mode='model', num_bins=8)
