@@ -1,3 +1,15 @@
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from matplotlib import colors
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/utils/')))
+import ptychosaxsNN_utils as ptNN_U
+import importlib
+importlib.reload(ptNN_U)
+
 class Scan_Plotter:
     """
     A class to handle various plotting methods for diffraction pattern scans.
@@ -47,6 +59,8 @@ class Scan_Plotter:
         # Cache for processed patterns
         self.processed_cache = {}
     
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
     def get_pattern(self, idx, use_model=True):
         """
         Get a processed or raw diffraction pattern.
@@ -74,7 +88,7 @@ class Scan_Plotter:
         if use_model and self.preprocess_func is not None and self.model is not None:
             # Process the diffraction pattern
             resultT, _, _ = self.preprocess_func(dp, self.mask)
-            pattern = self.model(resultT.to(device=device, dtype=torch.float)).detach().to("cpu").numpy()[0][0]
+            pattern = self.model(resultT.to(device=self.device, dtype=torch.float)).detach().to("cpu").numpy()[0][0]
         else:
             # Return the raw pattern
             pattern = dp
@@ -101,12 +115,12 @@ class Scan_Plotter:
         segment_masks : list of arrays
             List of boolean masks for each segment
         """
-        return create_azimuthal_segments((self.dpsize, self.dpsize), center=None, 
+        return ptNN_U.create_azimuthal_segments((self.dpsize, self.dpsize), center=None, 
                                         num_segments=num_segments,
                                         inner_radius=inner_radius, 
                                         outer_radius=outer_radius)
     
-    def plot_full_scan(self, use_model=True):
+    def plot_full_scan(self, use_model=True, log_scale=False):
         """
         Plot all diffraction patterns in a grid.
         
@@ -114,6 +128,8 @@ class Scan_Plotter:
         -----------
         use_model : bool
             Whether to plot model-processed patterns
+        log_scale : bool
+            Whether to use logarithmic color scale
             
         Returns:
         --------
@@ -154,8 +170,14 @@ class Scan_Plotter:
                         # Get the pattern
                         pattern = self.get_pattern(count, use_model)
                         
-                        # Plot the pattern
-                        im = axs[i][j].imshow(pattern, cmap='jet')
+                        # Plot the pattern with optional log scale
+                        if log_scale:
+                            # Add a small value to avoid log(0)
+                            pattern_for_log = pattern.copy()
+                            pattern_for_log[pattern_for_log <= 0] = pattern_for_log[pattern_for_log > 0].min() / 10
+                            im = axs[i][j].imshow(pattern_for_log, cmap='jet', norm=colors.LogNorm())
+                        else:
+                            im = axs[i][j].imshow(pattern, cmap='jet')
                         
                         count += 1
                         pbar.update(1)
@@ -176,14 +198,16 @@ class Scan_Plotter:
         
         return fig
     
-    def plot_absorption_map(self, use_model=True):
+    def plot_absorption_map(self, use_model=True, log_scale=False):
         """
-        Plot absorption map of the scan.
+        Plot a map of total absorption/intensity across the scan.
         
         Parameters:
         -----------
         use_model : bool
             Whether to use model-processed patterns
+        log_scale : bool
+            Whether to use logarithmic color scale
             
         Returns:
         --------
@@ -226,8 +250,12 @@ class Scan_Plotter:
         except KeyboardInterrupt:
             print("\nProcessing interrupted by user (Ctrl+C)")
         
-        # Plot the absorption map
-        im = ax.imshow(absorption_map, cmap='viridis')
+        # Plot the absorption map with optional log scale
+        if log_scale:
+            im = ax.imshow(absorption_map, cmap='viridis', norm=colors.LogNorm())
+        else:
+            im = ax.imshow(absorption_map, cmap='viridis')
+        
         ax.set_title('Absorption Map')
         ax.set_xlabel('X position')
         ax.set_ylabel('Y position')
@@ -242,7 +270,7 @@ class Scan_Plotter:
         return absorption_map
     
     def plot_azimuthal_segment(self, segment_idx=0, num_segments=8, 
-                              inner_radius=0, outer_radius=None, use_model=True):
+                              inner_radius=0, outer_radius=None, use_model=True, log_scale=False):
         """
         Plot integrated intensity of a specific azimuthal segment.
         
@@ -253,9 +281,11 @@ class Scan_Plotter:
         num_segments : int
             Total number of segments
         inner_radius, outer_radius : float
-            Radial constraints for the segments
+            Radial constraints for the segment
         use_model : bool
             Whether to use model-processed patterns
+        log_scale : bool
+            Whether to use logarithmic color scale
             
         Returns:
         --------
@@ -302,8 +332,12 @@ class Scan_Plotter:
         except KeyboardInterrupt:
             print("\nProcessing interrupted by user (Ctrl+C)")
         
-        # Plot the segment map
-        im = ax.imshow(segment_map, cmap='viridis')
+        # Plot the segment map with optional log scale
+        if log_scale:
+            im = ax.imshow(segment_map, cmap='viridis', norm=colors.LogNorm())
+        else:
+            im = ax.imshow(segment_map, cmap='viridis')
+        
         ax.set_title(f'Azimuthal Segment {segment_idx} Intensity Map')
         ax.set_xlabel('X position')
         ax.set_ylabel('Y position')
@@ -318,7 +352,8 @@ class Scan_Plotter:
         return segment_map
     
     def plot_all_azimuthal_segments(self, num_segments=8, inner_radius=0, 
-                                   outer_radius=None, example_idx=None, use_model=True):
+                                   outer_radius=None, example_idx=None, 
+                                   use_model=True, log_scale=False):
         """
         Plot all azimuthal segments with optional insets.
         
@@ -332,6 +367,8 @@ class Scan_Plotter:
             Index of an example pattern to show in insets
         use_model : bool
             Whether to use model-processed patterns
+        log_scale : bool
+            Whether to use logarithmic color scale
             
         Returns:
         --------
@@ -395,8 +432,12 @@ class Scan_Plotter:
             for i, j, pattern in processed_patterns:
                 segment_map[i, j] = np.sum(pattern * segment_mask)
             
-            # Plot segment map
-            im = axs[segment_idx].imshow(segment_map, cmap='viridis')
+            # Plot segment map with optional log scale
+            if log_scale:
+                im = axs[segment_idx].imshow(segment_map, cmap='viridis', norm=colors.LogNorm())
+            else:
+                im = axs[segment_idx].imshow(segment_map, cmap='viridis')
+            
             axs[segment_idx].set_title(f'Segment {segment_idx}')
             fig.colorbar(im, ax=axs[segment_idx])
             
@@ -569,7 +610,7 @@ class Scan_Plotter:
         
         return fig, radial_profile, bin_centers
     
-    def plot_radial_profile_map(self, radius_range, use_model=True, num_bins=10):
+    def plot_radial_profile_map(self, radius_range, use_model=True, num_bins=10, log_scale=False):
         """
         Plot a map of integrated intensity within a specific radius range.
         
@@ -581,6 +622,8 @@ class Scan_Plotter:
             Whether to use model-processed patterns
         num_bins : int
             Number of radial bins within the range
+        log_scale : bool
+            Whether to use logarithmic color scale
             
         Returns:
         --------
@@ -643,15 +686,19 @@ class Scan_Plotter:
         except KeyboardInterrupt:
             print("\nProcessing interrupted by user (Ctrl+C)")
         
-        # Plot each radial bin map
+        # Plot each radial bin map with optional log scale
         for bin_idx in range(num_bins):
             if bin_idx < len(axs):
                 # Calculate bin range for title
                 min_r = radial_bins[bin_idx]
                 max_r = radial_bins[bin_idx+1]
                 
-                # Plot the map
-                im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='viridis')
+                # Plot the map with optional log scale
+                if log_scale:
+                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='viridis', norm=colors.LogNorm())
+                else:
+                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='viridis')
+                
                 axs[bin_idx].set_title(f'r = {min_r:.1f}-{max_r:.1f} px')
                 fig.colorbar(im, ax=axs[bin_idx])
         

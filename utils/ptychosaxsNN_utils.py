@@ -762,6 +762,60 @@ def load_hdf5_scan_to_npy(file_path,scan,plot=True):
                     plt.show()
     dps=np.asarray(dps)
     return dps
+def create_azimuthal_segments(shape, center=None, num_segments=8, inner_radius=0, outer_radius=None):
+    """
+    Create a mask dividing a 2D array into azimuthal segments with radial constraints.
+    
+    Parameters:
+    -----------
+    shape : tuple
+        Shape of the 2D array (height, width)
+    center : tuple, optional
+        Center coordinates (y, x). If None, uses the center of the array.
+    num_segments : int
+        Number of azimuthal segments to create
+    inner_radius : float
+        Inner radius of the annular segments (default: 0, starts from center)
+    outer_radius : float
+        Outer radius of the annular segments (default: None, uses 80% of the minimum dimension)
+    
+    Returns:
+    --------
+    segment_masks : list of 2D arrays
+        List of boolean masks for each segment
+    """
+    if center is None:
+        center = (shape[0] // 2, shape[1] // 2)
+    
+    # Default outer radius is 80% of the minimum dimension to avoid corners
+    if outer_radius is None:
+        outer_radius = min(center[0], center[1], 
+                          shape[0] - center[0], 
+                          shape[1] - center[1]) * 0.8
+    
+    y, x = np.ogrid[:shape[0], :shape[1]]
+    y = y - center[0]
+    x = x - center[1]
+    
+    # Calculate radius for each pixel
+    radius = np.sqrt(y**2 + x**2)
+    
+    # Calculate angles in radians (0 to 2π)
+    angles = np.arctan2(y, x) % (2 * np.pi)
+    
+    # Create segment masks
+    segment_masks = []
+    segment_size = 2 * np.pi / num_segments
+    
+    for i in range(num_segments):
+        start_angle = i * segment_size
+        end_angle = (i + 1) * segment_size
+        
+        # Create mask for this segment with radial constraints
+        mask = (angles >= start_angle) & (angles < end_angle) & (radius >= inner_radius) & (radius <= outer_radius)
+        segment_masks.append(mask)
+    
+    return segment_masks
 
 def create_annular_mask(shape, peak_x,peak_y, r_outer):
     """Create an annular mask between r_inner and r_outer centered at 'center'."""
