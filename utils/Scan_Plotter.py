@@ -451,7 +451,10 @@ class Scan_Plotter:
                 masked_example[~segment_mask] = 0
                 
                 # Plot masked example
-                inset_ax.imshow(masked_example, cmap='jet')
+                if log_scale:
+                    inset_ax.imshow(masked_example, cmap='jet', norm=colors.LogNorm())
+                else:
+                    inset_ax.imshow(masked_example, cmap='jet')
                 inset_ax.set_xticks([])
                 inset_ax.set_yticks([])
                 inset_ax.set_title(f'Frame {example_idx}', fontsize=8)
