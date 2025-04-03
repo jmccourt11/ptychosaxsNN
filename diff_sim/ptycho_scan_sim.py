@@ -78,7 +78,7 @@ def vignette(image):
 # psi_k2=spf.fftshift(spf.fft2(pb1*ob_e/abs(ob_e)))
 # matshow(log(abs(psi_k2)**2+1))
 # plt.show()
-
+#%%
 
 def load_zhihua_ptychi(path,key):
     with h5py.File(path, 'r') as f:
@@ -87,9 +87,17 @@ def load_zhihua_ptychi(path,key):
 pb=load_zhihua_ptychi("/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp256_LSQML_c1000_m0.5_p15_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5","probe")
 ob=load_zhihua_ptychi("/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S5045/Ndp256_LSQML_c1000_m0.5_p15_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5","object")
 
+ob_w=ob[0]
+plt.figure()
+plt.imshow(abs(ob_w))
+plt.show()
 
+pb1=pb[0,0,:,:]
+plt.figure()
+plt.imshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+plt.show()
 
-
+#%%
 ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
 ob_w=ob['object']
 matshow(abs(ob_w))
@@ -171,16 +179,16 @@ radius = lattice_spacing/2  # Radius of the spherical nanoparticles
 #total_intensity=np.zeros((256,256))
 #total_intensity_conv=np.zeros((256,256))
 count=1
-plot_all=False
-plot=False  
-total_plot=False
-total=False
+plot_all=True
+plot=True  
+total_plot=True
+total=True
 nsteps=3
-nscans=1200
+nscans=1
 num_simdps=nsteps**2*nscans
 random_placed=False
 save=True
-save_total=True
+save_total=False
 noise_on=False
 dr=32
 dpsize=256

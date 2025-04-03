@@ -10,6 +10,31 @@ import ptychosaxsNN_utils as ptNN_U
 import importlib
 importlib.reload(ptNN_U)
 
+def calculate_psnr(img1, img2, max_val=None):
+    """
+    Calculate Peak Signal-to-Noise Ratio between two images.
+    
+    Parameters:
+    -----------
+    img1, img2 : array_like
+        The images between which to calculate PSNR
+    max_val : float, optional
+        Maximum possible pixel value. If None, uses the maximum value in img1
+        
+    Returns:
+    --------
+    psnr : float
+        The PSNR value in decibels
+    """
+    if max_val is None:
+        max_val = np.max(img1)
+    
+    mse = np.mean((img1 - img2) ** 2)
+    if mse == 0:
+        return float('inf')
+    
+    return 20 * np.log10(max_val) - 10 * np.log10(mse)
+
 class Scan_Plotter:
     """
     A class to handle various plotting methods for diffraction pattern scans.
@@ -61,9 +86,99 @@ class Scan_Plotter:
     
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-    def get_pattern(self, idx, mode='model'):
+    def normalize_patterns(self, mode='model', method='sum'):
         """
-        Get a diffraction pattern in various processing stages.
+        Normalize all diffraction patterns in the scan.
+        
+        Parameters:
+        -----------
+        mode : str or list
+            Processing mode(s): 'raw', 'preprocessed', or 'model', or list of modes
+        method : str
+            Normalization method:
+                'sum': Normalize by total intensity (sum)
+                'mean': Normalize by mean intensity
+                'max': Normalize by maximum intensity
+                'subtract_first': Subtract the first pattern (straight-through beam) from all others
+                
+        Returns:
+        --------
+        normalization_factors : dict
+            Dictionary of normalization factors for each mode
+        """
+        print("Calculating normalization factors...")
+        
+        # Convert single mode to list
+        if isinstance(mode, str):
+            modes = [mode]
+        else:
+            modes = mode
+        
+        # Initialize normalization factors based on method
+        if method == 'subtract_first':
+            # For subtract_first, we'll store the reference patterns and differences for each mode
+            if not hasattr(self, 'reference_patterns'):
+                self.reference_patterns = {}
+            if not hasattr(self, 'difference_patterns'):
+                self.difference_patterns = {}
+            
+            # Initialize dictionaries for each mode
+            for m in modes:
+                if m not in self.reference_patterns:
+                    self.reference_patterns[m] = None
+                if m not in self.difference_patterns:
+                    self.difference_patterns[m] = {}
+        else:
+            normalization_factors = {m: np.zeros(len(self.dps)) for m in modes}
+        
+        # First pass: calculate normalization factors
+        try:
+            pbar = tqdm(total=len(self.dps))
+            for idx in range(len(self.dps)):
+                for m in modes:
+                    pattern = self.get_pattern(idx, m)
+                    
+                    if method == 'sum':
+                        factor = np.sum(pattern)
+                    elif method == 'mean':
+                        factor = np.mean(pattern)
+                    elif method == 'max':
+                        factor = np.max(pattern)
+                    elif method == 'subtract_first':
+                        if idx == 0:
+                            # Store the first pattern as the reference for this mode
+                            self.reference_patterns[m] = pattern
+                            # Store the difference pattern (zeros for first pattern)
+                            self.difference_patterns[m][idx] = np.zeros_like(pattern)
+                        else:
+                            # Calculate and store the difference pattern
+                            self.difference_patterns[m][idx] = pattern - self.reference_patterns[m]
+                        continue  # Skip storing in normalization_factors
+                    else:
+                        raise ValueError(f"Unknown normalization method: {method}")
+                    
+                    normalization_factors[m][idx] = factor
+                pbar.update(1)
+            pbar.close()
+        except KeyboardInterrupt:
+            print("\nProcessing interrupted by user (Ctrl+C)")
+        
+        # Store normalization factors and method info
+        if method != 'subtract_first':
+            self.normalization_factors = normalization_factors
+        self.normalization_method = method
+        
+        # Store which modes have been normalized
+        if not hasattr(self, 'normalized_modes'):
+            self.normalized_modes = set()
+        self.normalized_modes.update(modes)
+        
+        return normalization_factors if method != 'subtract_first' else None
+
+    def _get_base_pattern(self, idx, mode='model'):
+        """
+        Get a diffraction pattern in various processing stages without normalization.
+        This is the base method that actually retrieves the pattern.
         
         Parameters:
         -----------
@@ -71,9 +186,6 @@ class Scan_Plotter:
             Index of the diffraction pattern
         mode : str
             Processing mode: 'raw', 'preprocessed', or 'model'
-                'raw': Original diffraction pattern
-                'preprocessed': After preprocessing (model input)
-                'model': After model processing (deconvolved)
             
         Returns:
         --------
@@ -81,7 +193,7 @@ class Scan_Plotter:
             The processed or raw diffraction pattern
         """
         # Check if we've already processed this pattern
-        cache_key = (idx, mode)
+        cache_key = (idx, mode, False)  # False for not normalized
         if cache_key in self.processed_cache:
             return self.processed_cache[cache_key]
         
@@ -109,6 +221,53 @@ class Scan_Plotter:
             # Fallback to raw for unknown mode
             pattern = dp
             print(f"Warning: Invalid mode '{mode}' or preprocessing function not available, returning raw pattern for idx {idx}")
+        
+        # Cache the result
+        self.processed_cache[cache_key] = pattern
+        return pattern
+
+    def get_pattern(self, idx, mode='model', normalized=False):
+        """
+        Get a diffraction pattern in various processing stages.
+        
+        Parameters:
+        -----------
+        idx : int
+            Index of the diffraction pattern
+        mode : str
+            Processing mode: 'raw', 'preprocessed', or 'model'
+        normalized : bool
+            Whether to return the normalized pattern
+            
+        Returns:
+        --------
+        pattern : array
+            The processed or raw diffraction pattern
+        """
+        # Check if we've already processed this pattern
+        cache_key = (idx, mode, normalized)
+        if cache_key in self.processed_cache:
+            return self.processed_cache[cache_key]
+        
+        # Get the base pattern
+        pattern = self._get_base_pattern(idx, mode)
+        
+        # Apply normalization if requested
+        if normalized:
+            if not hasattr(self, 'normalization_method'):
+                raise ValueError("Patterns must be normalized first using normalize_patterns()")
+            if mode not in self.normalized_modes:
+                raise ValueError(f"Patterns for mode '{mode}' have not been normalized. Please normalize this mode first.")
+            
+            if self.normalization_method == 'subtract_first':
+                # For subtract_first method, return the pre-calculated difference pattern for this mode
+                pattern = self.difference_patterns[mode][idx]
+            else:
+                factor = self.normalization_factors[mode][idx]
+                if factor > 0:  # Avoid division by zero
+                    pattern = pattern / factor
+                else:
+                    print(f"Warning: Zero normalization factor for pattern {idx}")
         
         # Cache the result
         self.processed_cache[cache_key] = pattern
@@ -215,7 +374,7 @@ class Scan_Plotter:
         
         return fig
     
-    def plot_absorption_map(self, mode='model', log_scale=False):
+    def plot_absorption_map(self, mode='model', log_scale=False, normalized=False):
         """
         Plot a map of total absorption/intensity across the scan.
         
@@ -225,6 +384,8 @@ class Scan_Plotter:
             Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
+        normalized : bool
+            Whether to use normalized patterns
             
         Returns:
         --------
@@ -252,10 +413,11 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, mode)
+                        pattern = self.get_pattern(count, mode, normalized=normalized)
                         
                         # Calculate absorption (mean intensity)
-                        absorption = np.mean(pattern)
+                        #absorption = np.mean(pattern)
+                        absorption = np.sum(pattern)
                         
                         # Store the absorption value
                         absorption_map[i, j] = absorption
@@ -269,9 +431,9 @@ class Scan_Plotter:
         
         # Plot the absorption map with optional log scale
         if log_scale:
-            im = ax.imshow(absorption_map, cmap='viridis', norm=colors.LogNorm())
+            im = ax.imshow(absorption_map, cmap='jet', norm=colors.LogNorm())
         else:
-            im = ax.imshow(absorption_map, cmap='viridis')
+            im = ax.imshow(absorption_map, cmap='jet')
         
         ax.set_title('Absorption Map')
         ax.set_xlabel('X position')
@@ -284,10 +446,11 @@ class Scan_Plotter:
         plt.tight_layout()
         plt.show()
         
-        return absorption_map
+        return fig, absorption_map
     
     def plot_azimuthal_segment(self, segment_idx=0, num_segments=8, 
-                              inner_radius=0, outer_radius=None, mode='model', log_scale=False):
+                              inner_radius=0, outer_radius=None, mode='model', log_scale=False,
+                              normalized=False):
         """
         Plot integrated intensity of a specific azimuthal segment.
         
@@ -303,6 +466,8 @@ class Scan_Plotter:
             Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
+        normalized : bool
+            Whether to use normalized patterns
             
         Returns:
         --------
@@ -334,7 +499,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, mode)
+                        pattern = self.get_pattern(count, mode, normalized=normalized)
                         
                         # Calculate segment intensity
                         segment_intensity = np.sum(pattern * segment_mask)
@@ -351,9 +516,9 @@ class Scan_Plotter:
         
         # Plot the segment map with optional log scale
         if log_scale:
-            im = ax.imshow(segment_map, cmap='viridis', norm=colors.LogNorm())
+            im = ax.imshow(segment_map, cmap='jet', norm=colors.LogNorm())
         else:
-            im = ax.imshow(segment_map, cmap='viridis')
+            im = ax.imshow(segment_map, cmap='jet')
         
         ax.set_title(f'Azimuthal Segment {segment_idx} Intensity Map')
         ax.set_xlabel('X position')
@@ -370,7 +535,7 @@ class Scan_Plotter:
     
     def plot_all_azimuthal_segments(self, num_segments=8, inner_radius=0, 
                                    outer_radius=None, example_idx=None, 
-                                   mode='model', log_scale=False):
+                                   mode='model', log_scale=False, normalized=False):
         """
         Plot all azimuthal segments with optional insets.
         
@@ -386,6 +551,8 @@ class Scan_Plotter:
             Processing mode: 'raw', 'preprocessed', or 'model'
         log_scale : bool
             Whether to use logarithmic color scale
+        normalized : bool
+            Whether to use normalized patterns
             
         Returns:
         --------
@@ -404,7 +571,7 @@ class Scan_Plotter:
         
         # Process example pattern for insets if requested
         if example_idx is not None:
-            example_pattern = self.get_pattern(example_idx, mode)
+            example_pattern = self.get_pattern(example_idx, mode, normalized=normalized)
         
         # Process all patterns once
         processed_patterns = []
@@ -423,7 +590,7 @@ class Scan_Plotter:
                 for j in j_range:
                     if count < len(self.dps):
                         # Get the pattern
-                        pattern = self.get_pattern(count, mode)
+                        pattern = self.get_pattern(count, mode, normalized=normalized)
                         
                         # Store the pattern with its position
                         processed_patterns.append((i, j, pattern))
@@ -435,8 +602,11 @@ class Scan_Plotter:
         except KeyboardInterrupt:
             print("\nProcessing interrupted by user (Ctrl+C)")
         
-        # Create and plot segment maps
+        # Create and calculate all segment maps first to determine global min/max
         print("Creating segment maps...")
+        segment_maps = []
+        vmin, vmax = float('inf'), float('-inf')
+        
         for segment_idx in range(num_segments):
             if segment_idx >= len(axs):
                 break
@@ -449,14 +619,28 @@ class Scan_Plotter:
             for i, j, pattern in processed_patterns:
                 segment_map[i, j] = np.sum(pattern * segment_mask)
             
-            # Plot segment map with optional log scale
+            # Update global min/max
+            vmin = min(vmin, np.min(segment_map))
+            vmax = max(vmax, np.max(segment_map))
+            
+            segment_maps.append(segment_map)
+        
+        # Now plot all segments with the same color scale
+        for segment_idx, segment_map in enumerate(segment_maps):
+            if segment_idx >= len(axs):
+                break
+            
+            # Plot segment map with common scale
             if log_scale:
-                im = axs[segment_idx].imshow(segment_map, cmap='viridis', norm=colors.LogNorm())
+                # Ensure positive values for log scale
+                if vmin <= 0:
+                    vmin = np.min(segment_map[segment_map > 0])
+                norm = colors.LogNorm(vmin=vmin, vmax=vmax)
+                im = axs[segment_idx].imshow(segment_map, cmap='jet', norm=norm)
             else:
-                im = axs[segment_idx].imshow(segment_map, cmap='viridis')
+                im = axs[segment_idx].imshow(segment_map, cmap='jet', vmin=vmin, vmax=vmax)
             
             axs[segment_idx].set_title(f'Segment {segment_idx}')
-            fig.colorbar(im, ax=axs[segment_idx])
             
             # Add inset if example_idx was provided
             if example_idx is not None:
@@ -465,7 +649,7 @@ class Scan_Plotter:
                 
                 # Create masked example
                 masked_example = example_pattern.copy()
-                masked_example[~segment_mask] = 0
+                masked_example[~segment_masks[segment_idx]] = 0
                 
                 # Plot masked example
                 if log_scale:
@@ -480,10 +664,15 @@ class Scan_Plotter:
         for idx in range(num_segments, len(axs)):
             axs[idx].axis('off')
         
+        # Add a single colorbar for all segments
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        fig.colorbar(im, cax=cbar_ax, label='Integrated Intensity (a.u.)')
+        
         plt.tight_layout()
+        plt.subplots_adjust(right=0.9)  # Make room for the colorbar
         plt.show()
         
-        return fig
+        return fig, segment_maps
     
     def plot_radial_profile(self, idx=None, mode='model', num_bins=100, max_radius=None, 
                            log_scale=True, azimuthal_range=None):
@@ -715,9 +904,9 @@ class Scan_Plotter:
                 
                 # Plot the map with optional log scale
                 if log_scale:
-                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='viridis', norm=colors.LogNorm())
+                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='jet', norm=colors.LogNorm())
                 else:
-                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='viridis')
+                    im = axs[bin_idx].imshow(radial_maps[bin_idx], cmap='jet')
                 
                 axs[bin_idx].set_title(f'r = {min_r:.1f}-{max_r:.1f} px')
                 fig.colorbar(im, ax=axs[bin_idx])
@@ -731,6 +920,109 @@ class Scan_Plotter:
         
         return fig, radial_maps
     
+    def calculate_pattern_psnr(self, idx=None, normalized=False):
+        """
+        Calculate PSNR between preprocessed (convolved) and model (deconvolved) patterns.
+        
+        Parameters:
+        -----------
+        idx : int or None
+            Index of the pattern to analyze. If None, calculates PSNR for all patterns.
+        normalized : bool
+            Whether to use normalized patterns
+            
+        Returns:
+        --------
+        psnr_values : float or array
+            PSNR value(s) in decibels. Single float if idx is provided, array otherwise.
+        """
+        if idx is not None:
+            # Calculate PSNR for a single pattern
+            preprocessed = self.get_pattern(idx, mode='preprocessed', normalized=normalized)
+            model = self.get_pattern(idx, mode='model', normalized=normalized)
+            
+            return calculate_psnr(preprocessed, model)
+        else:
+            # Calculate PSNR for all patterns
+            psnr_values = np.zeros(len(self.dps))
+            
+            try:
+                print("Calculating PSNR for all patterns...")
+                pbar = tqdm(total=len(self.dps))
+                
+                for i in range(len(self.dps)):
+                    preprocessed = self.get_pattern(i, mode='preprocessed', normalized=normalized)
+                    model = self.get_pattern(i, mode='model', normalized=normalized)
+                    
+                    psnr_values[i] = calculate_psnr(preprocessed, model)
+                    pbar.update(1)
+                
+                pbar.close()
+            except KeyboardInterrupt:
+                print("\nProcessing interrupted by user (Ctrl+C)")
+            
+            return psnr_values
+    
+    def plot_psnr_map(self, normalized=False):
+        """
+        Plot a map of PSNR values across the scan.
+        
+        Parameters:
+        -----------
+        normalized : bool
+            Whether to use normalized patterns
+            
+        Returns:
+        --------
+        fig : matplotlib figure
+            The figure containing the plot
+        psnr_map : array
+            2D array of PSNR values
+        """
+        # Calculate PSNR for all patterns
+        psnr_values = self.calculate_pattern_psnr(normalized=normalized)
+        
+        # Create figure and axes
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        
+        # Reshape PSNR values into 2D map
+        psnr_map = np.zeros((self.scany, self.scanx))
+        count = 0
+        
+        for i in range(self.scany):
+            # Handle serpentine scan pattern
+            if i % 2 == 0:
+                j_range = range(self.scanx)  # Left to right
+            else:
+                j_range = range(self.scanx-1, -1, -1)  # Right to left
+            
+            for j in j_range:
+                if count < len(psnr_values):
+                    psnr_map[i, j] = psnr_values[count]
+                    count += 1
+        
+        # Plot the PSNR map
+        im = ax.imshow(psnr_map, cmap='viridis')
+        
+        ax.set_title('PSNR Map')
+        ax.set_xlabel('X position')
+        ax.set_ylabel('Y position')
+        
+        # Add colorbar
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label('PSNR (dB)')
+        
+        # Add mean PSNR value as text
+        mean_psnr = np.mean(psnr_values)
+        ax.text(0.02, 0.98, f'Mean PSNR: {mean_psnr:.2f} dB',
+                transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=dict(facecolor='white', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, psnr_map
+    
     # Additional methods could include:
     # - plot_radial_profile
     # - plot_q_resolved_map
@@ -743,21 +1035,19 @@ class Scan_Plotter:
 # plotter = Scan_Plotter(dps, ptNN_U.preprocess_ZCB_9, mask, model_new, 
 #                        scanx=36, scany=29)
 
-# # Plot full scan with raw patterns
-# plotter.plot_full_scan(mode='raw')
+# # Normalize all patterns (using sum normalization)
+# normalization_factors = plotter.normalize_patterns(mode='model', method='sum')
 
-# # Plot absorption map with deconvolved patterns
-# absorption_map = plotter.plot_absorption_map(mode='model')
+# # Plot normalized patterns
+# plotter.plot_full_scan(mode='model', normalized=True)
 
-# # Plot a specific azimuthal segment
-# segment_map = plotter.plot_azimuthal_segment(segment_idx=2, num_segments=8, 
-#                                             inner_radius=10, outer_radius=100,
-#                                             mode='model')
+# # Plot normalized absorption map
+# absorption_map = plotter.plot_absorption_map(mode='model', normalized=True)
 
-# # Plot all azimuthal segments with insets
+# # Plot normalized azimuthal segments
 # plotter.plot_all_azimuthal_segments(num_segments=8, inner_radius=10, 
 #                                    outer_radius=100, example_idx=664,
-#                                    mode='model')
+#                                    mode='model', normalized=True)
 
 # # Plot radial profile for a specific diffraction pattern
 # fig, profile, bins = plotter.plot_radial_profile(idx=664, mode='model', num_bins=100)
