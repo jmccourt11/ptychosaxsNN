@@ -1023,6 +1023,108 @@ class Scan_Plotter:
         
         return fig, psnr_map
     
+    def plot_model_comparison(self, model_paths, pattern_idx=664, normalized=False, 
+                             figsize=(20, 15), cmap='viridis'):
+        """
+        Plot comparison of different models side by side.
+        
+        Parameters:
+        -----------
+        model_paths : dict
+            Dictionary with structure:
+            {
+                'iterations': [2, 10, 25, 50, 100, 150, 200, 250, 300, 400, 500],
+                'models': {
+                    'L2_no_Unet': 'best_model_ZCB_9_32_no_Unet_epoch_{}_L2.pth',
+                    'L2_Unet': 'best_model_ZCB_9_32_Unet_epoch_{}_L2.pth',
+                    'pearson_no_Unet': 'best_model_ZCB_9_31_no_Unet_epoch_{}_pearson_loss.pth',
+                    'pearson_Unet': 'best_model_ZCB_9_31_Unet_epoch_{}_pearson_loss.pth'
+                }
+            }
+        pattern_idx : int
+            Index of the pattern to compare
+        normalized : bool
+            Whether to use normalized patterns
+        figsize : tuple
+            Figure size (width, height)
+        cmap : str
+            Colormap to use for plotting
+            
+        Returns:
+        --------
+        fig : matplotlib figure
+            The figure containing the comparison plots
+        """
+        import torch
+        from pathlib import Path
+        
+        # Create figure and axes
+        n_rows = len(model_paths['iterations'])
+        n_cols = len(model_paths['models'])
+        fig, axs = plt.subplots(n_rows, n_cols, figsize=figsize)
+        
+        # Get the base pattern for comparison
+        base_pattern = self.get_pattern(pattern_idx, mode='model', normalized=normalized)
+        
+        # Load and process each model
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        for i, iteration in enumerate(model_paths['iterations']):
+            for j, (model_name, model_template) in enumerate(model_paths['models'].items()):
+                try:
+                    # Load model
+                    model_path = Path("/net/micdata/data2/12IDC/ptychosaxs/trained_model") / model_template.format(iteration)
+                    if not model_path.exists():
+                        print(f"Model not found: {model_path}")
+                        continue
+                    
+                    # Initialize appropriate model class based on name
+                    if 'no_Unet' in model_name:
+                        from encoder1_no_Unet import recon_model
+                        model = recon_model()
+                    else:
+                        from encoder1 import recon_model
+                        model = recon_model()
+                    
+                    # Load model weights and move to device
+                    model.load_state_dict(torch.load(model_path))
+                    model.to(device)
+                    model.eval()
+                    
+                    # Get pattern using this model
+                    with torch.no_grad():
+                        pattern = self.get_pattern(pattern_idx, mode='preprocessed', normalized=normalized)
+                        pattern_tensor = torch.from_numpy(pattern).unsqueeze(0).unsqueeze(0).to(device)
+                        output = model(pattern_tensor)
+                        output = output.cpu().numpy()[0, 0]
+                    
+                    # Plot the pattern
+                    im = axs[i, j].imshow(output, cmap=cmap)
+                    axs[i, j].set_title(f'{model_name}\nIteration {iteration}')
+                    
+                    # Calculate and display PSNR
+                    psnr = calculate_psnr(base_pattern, output)
+                    axs[i, j].text(0.02, 0.98, f'PSNR: {psnr:.2f} dB',
+                                 transform=axs[i, j].transAxes,
+                                 verticalalignment='top',
+                                 bbox=dict(facecolor='white', alpha=0.8))
+                    
+                except Exception as e:
+                    print(f"Error processing {model_name} iteration {iteration}: {e}")
+                    axs[i, j].text(0.5, 0.5, 'Error',
+                                 ha='center', va='center',
+                                 transform=axs[i, j].transAxes)
+        
+        # Add colorbar
+        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+        fig.colorbar(im, cax=cbar_ax)
+        
+        plt.tight_layout()
+        plt.subplots_adjust(right=0.9)  # Make room for the colorbar
+        plt.show()
+        
+        return fig
+    
     # Additional methods could include:
     # - plot_radial_profile
     # - plot_q_resolved_map
