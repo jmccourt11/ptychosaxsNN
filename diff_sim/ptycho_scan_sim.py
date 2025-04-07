@@ -14,7 +14,7 @@ from matplotlib import colors
 import random
 import h5py
 import pdb
-
+import os
 def hanning(image):
     #circular mask of radius=radius over image 
     xs=np.hanning(image.shape[0])
@@ -190,7 +190,7 @@ random_placed=False
 save=True
 save_total=False
 noise_on=False
-dr=32
+dr=0#32
 dpsize=256
 resize_pbp=False#True
 
@@ -214,6 +214,36 @@ psf_pinhole=cp.abs(cp.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole.npy'))
 #load lattice
 amplitude_3d=np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy')
 
+def calculate_rotation_angles(h, k, l):
+    """
+    Calculate rotation angles to align a specific (hkl) plane with the beam direction [0,0,1]
+    for a cubic lattice.
+    
+    Parameters:
+    -----------
+    h, k, l : int
+        Miller indices of the desired reflection
+    
+    Returns:
+    --------
+    tuple
+        Rotation angles (alpha, beta, gamma) in degrees
+    """
+    # Normalize the vector
+    norm = np.sqrt(h**2 + k**2 + l**2)
+    h, k, l = h/norm, k/norm, l/norm
+    
+    # Calculate rotation angles
+    # First rotation: around z-axis to align projection with x-z plane
+    alpha = np.arctan2(k, h) * 180/np.pi
+    
+    # Second rotation: around y-axis to align with z-axis
+    beta = np.arccos(l) * 180/np.pi
+    
+    # Third rotation: around z-axis to set final orientation
+    gamma = 0  # Can be adjusted if specific in-plane orientation is needed
+    
+    return (alpha, beta, gamma)
 
 # Define scan pattern - probe moves across the lattice
 # Start position in the padded grid - centered with offset
@@ -232,11 +262,15 @@ start_y = center_y - scan_range // 2
 step_size_x = scan_range // (nsteps-1) if nsteps > 1 else 0
 step_size_y = scan_range // (nsteps-1) if nsteps > 1 else 0
 
+# Define the Miller indices for the desired reflection
+hr, kr, lr = 3, 2, 1  # Example: (111) reflection
+rotation_angles = calculate_rotation_angles(hr, kr, lr)
+
 for l in tqdm(range(0,nscans)):
     total_intensity=np.zeros((dpsize,dpsize))
     total_intensity_conv=np.zeros((dpsize,dpsize))
-    rotation_angles = ((random.randint(0,90), random.randint(0,90), random.randint(0,90)))  # Rotation angles in degrees (alpha, beta, gamma)
-    # rotation_angles = ((0, 0, 0))
+    
+    # Use the calculated rotation angles instead of random ones
     amplitude_3d_rotated = rotate(amplitude_3d, angle=rotation_angles[0], axes=(1, 2), reshape=False)
     amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[1], axes=(0, 2), reshape=False)
     amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[2], axes=(0, 1), reshape=False)
@@ -244,12 +278,6 @@ for l in tqdm(range(0,nscans)):
     for k in range(0,nsteps):
         for i in range(0,nsteps):
             
-            # Rotate the 3D amplitude grid
-            # rotation_angles = ((random.randint(0,90), random.randint(0,90), random.randint(0,90)))  # Rotation angles in degrees (alpha, beta, gamma)
-            # amplitude_3d_rotated = rotate(amplitude_3d, angle=rotation_angles[0], axes=(1, 2), reshape=False)
-            # amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[1], axes=(0, 2), reshape=False)
-            # amplitude_3d_rotated = rotate(amplitude_3d_rotated, angle=rotation_angles[2], axes=(0, 1), reshape=False)
-
             # Project the 3D rotated grid to 2D by summing along one axis (e.g., Z-axis)
             amplitude_2d = np.sum(amplitude_3d_rotated, axis=2)
 
@@ -412,7 +440,12 @@ for l in tqdm(range(0,nscans)):
             # ax[2].imshow(pinhole_DP_extra_conv,norm=colors.LogNorm(),cmap='jet')
             # plt.show()
             
-            filename='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/output_hanning_conv_{:05d}.npz'.format(dr,count)
+            #filename='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/output_hanning_conv_{:05d}.npz'.format(dr,count)
+            if not os.path.exists(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC'):
+                os.makedirs(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC')    
+            
+            filename=f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC/output_hanning_conv_{hr}_{kr}_{lr}_{count:05d}.npz'
+            print(filename)
             
             if save:
                 np.savez(filename,pinholeDP=pinhole_DP,pinholeDP_extra_conv=pinhole_DP_extra_conv,convDP=conv_DP,obj=ob_e_2,probe=pb1)
