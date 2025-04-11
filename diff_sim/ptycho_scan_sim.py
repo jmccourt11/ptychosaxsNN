@@ -100,12 +100,18 @@ plt.show()
 #%%
 ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
 ob_w=ob['object']
-matshow(abs(ob_w))
+matshow(np.angle(ob_w)[588-256:588+256,528-256:528+256],cmap='gray')
+plt.axis('off')
+plt.savefig('ob_w.pdf',dpi=300)
 plt.show()
 
+#%%
 pb=ob['probe']
 pb1=pb[:,:,0,0]
-matshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+im1=plt.imshow(abs(spf.fftshift(spf.fft2(pb1))),norm=colors.LogNorm(),cmap='jet')
+#plt.colorbar(im1)
+plt.axis('off')
+#plt.savefig('probe.pdf',dpi=300)
 plt.show()
 
 #%%
@@ -187,7 +193,7 @@ nsteps=3
 nscans=1
 num_simdps=nsteps**2*nscans
 random_placed=False
-save=True
+save=False
 save_total=False
 noise_on=False
 dr=0#32
@@ -214,6 +220,7 @@ psf_pinhole=cp.abs(cp.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole.npy'))
 #load lattice
 amplitude_3d=np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy')
 
+#%%
 def calculate_rotation_angles(h, k, l):
     """
     Calculate rotation angles to align a specific (hkl) plane with the beam direction [0,0,1]
@@ -263,7 +270,7 @@ step_size_x = scan_range // (nsteps-1) if nsteps > 1 else 0
 step_size_y = scan_range // (nsteps-1) if nsteps > 1 else 0
 
 # Define the Miller indices for the desired reflection
-hr, kr, lr = 3, 2, 1  # Example: (111) reflection
+hr, kr, lr = 1, 0, 0  # Example: (111) reflection
 rotation_angles = calculate_rotation_angles(hr, kr, lr)
 
 for l in tqdm(range(0,nscans)):
@@ -338,6 +345,7 @@ for l in tqdm(range(0,nscans)):
             #phase_padded = np.pad(phase_2d, pad_width=padding, mode='constant', constant_values=pad_value)
             particles_padded = np.pad(particles_2d+bkg, pad_width=padding, mode='constant', constant_values=pad_value)
             
+            
 
             # Generate a 2D array of random numbers between -1 and 1 for noise
             # Noise makes simulated object background similar to reconstructed object background
@@ -365,8 +373,14 @@ for l in tqdm(range(0,nscans)):
         
             if plot_all:
                 matshow(angle(ob_e_2),cmap='gray')
-                matshow(abs(pb1),cmap='Reds')
                 plt.show()
+                    
+                if k==1 and i==1:
+                    matshow(abs(pb1),cmap='Reds')
+                    plt.axis('off')
+                    plt.savefig(f'pb1_{hr}_{kr}_{lr}.pdf',dpi=300)
+                    plt.show()
+                #%%
             if plot_all:
                 fig, ax=plt.subplots()
                 ax.imshow(angle(ob_e_2),cmap='gray')
