@@ -15,6 +15,8 @@ import random
 import h5py
 import pdb
 import os
+from matplotlib.colors import LinearSegmentedColormap
+
 def hanning(image):
     #circular mask of radius=radius over image 
     xs=np.hanning(image.shape[0])
@@ -102,7 +104,7 @@ ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0
 ob_w=ob['object']
 matshow(np.angle(ob_w)[588-256:588+256,528-256:528+256],cmap='gray')
 plt.axis('off')
-plt.savefig('ob_w.pdf',dpi=300)
+#plt.savefig('ob_w.pdf',dpi=300)
 plt.show()
 
 #%%
@@ -270,8 +272,22 @@ step_size_x = scan_range // (nsteps-1) if nsteps > 1 else 0
 step_size_y = scan_range // (nsteps-1) if nsteps > 1 else 0
 
 # Define the Miller indices for the desired reflection
-hr, kr, lr = 1, 0, 0  # Example: (111) reflection
+hr, kr, lr = 4, 4, 4  # Example: (111) reflection
 rotation_angles = calculate_rotation_angles(hr, kr, lr)
+
+#rotation_angles = [random.randint(0,90),random.randint(0,90),random.randint(0,90)]
+#%%
+# Define which scan positions to show rectangles for before the loop
+# List of (k,i) tuples for which positions to show rectangles
+show_positions = [
+    #(2,0),    # top right
+    (0,2),    # bottom left
+    (1,1),    # center
+]
+
+# Store probe positions for later plotting
+probe_positions = []
+
 
 for l in tqdm(range(0,nscans)):
     total_intensity=np.zeros((dpsize,dpsize))
@@ -370,29 +386,94 @@ for l in tqdm(range(0,nscans)):
                                 probe_center_y-p_hw:probe_center_y+p_hw] * \
                         hanning(ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw,
                                     probe_center_y-p_hw:probe_center_y+p_hw])
-        
+                
+                # Store position if it's in show_positions
+                if (k,i) in show_positions:
+                    probe_positions.append((probe_center_x, probe_center_y))
+
+            # plt.figure()
+            # plt.imshow(abs(pb1),cmap='Reds')
+            # plt.savefig(f'pb1_{hr}_{kr}_{lr}_scan_index.pdf',dpi=300)
+            # plt.show()
+            
+            # plt.figure()
+            # plt.imshow(abs(pbp),cmap='Reds')
+            # plt.savefig(f'pbp_{hr}_{kr}_{lr}_scan_index.pdf',dpi=300)
+            # plt.show()
+            #fig, ax=plt.subplots()
             if plot_all:
-                matshow(angle(ob_e_2),cmap='gray')
-                plt.show()
-                    
+                # plt.figure()
+                # plt.imshow(angle(ob_w_2),cmap='gray')
+                # plt.savefig(f'ob_w_2_{hr}_{kr}_{lr}_scan_index_{k}_{i}.pdf',dpi=300)
+                # plt.show()
+
                 if k==1 and i==1:
-                    matshow(abs(pb1),cmap='Reds')
+                    fig, ax0 = plt.subplots()
+                    ax0.imshow(abs(pb1),cmap='Reds')
                     plt.axis('off')
+                    rect = plt.Rectangle((0, 0), 
+                    pb1.shape[1]-1, pb1.shape[0]-1, 
+                    fill=False, linestyle='--', color='#fcd83f')
+                    ax0.add_patch(rect)
                     plt.savefig(f'pb1_{hr}_{kr}_{lr}.pdf',dpi=300)
-                    plt.show()
+                    plt.show()      
+                # Create custom green colormap
+                # Define colors for the colormap (black to bright green)
+                colors = [(0, 0, 0),          # black
+                         '#3ade5e']           # bright green
                 #%%
+                n_bins = 256  # Number of gradients
+                green_cmap = LinearSegmentedColormap.from_list('custom_green', colors, N=n_bins)
+                
+                # Create single figure with all ROIs
+                fig, ax = plt.subplots()
+                
+                # Define crop region relative to full ob_w_2
+                crop_start = 208  # Starting point of crop
+                crop_end = -208   # Ending point of crop
+                
+                # Show cropped region of ob_w_2
+                cropped_ob = ob_w_2[crop_start:crop_end, crop_start:crop_end]
+                ax.imshow(angle(cropped_ob), cmap=green_cmap)
+                
+                # Plot rectangles for all stored positions
+                for idx, (probe_x, probe_y) in enumerate(probe_positions, 1):
+                    # Adjust coordinates relative to crop
+                    rel_probe_x = probe_x - crop_start
+                    rel_probe_y = probe_y - crop_start
+                    
+                    # Check if probe region is within cropped view
+                    if (rel_probe_x - p_hw >= 0 and rel_probe_x + p_hw <= cropped_ob.shape[0] and
+                        rel_probe_y - p_hw >= 0 and rel_probe_y + p_hw <= cropped_ob.shape[1]):
+                        rect = plt.Rectangle((rel_probe_y-p_hw, rel_probe_x-p_hw), 
+                                          pb1.shape[1], pb1.shape[0], 
+                                          fill=False, linestyle='--', color='#fcd83f')
+                        ax.add_patch(rect)
+                        
+                        # Add ROI label
+                        ax.text(rel_probe_y-p_hw, rel_probe_x-p_hw-5, f'ROI {idx}', 
+                               color='#fcd83f', fontsize=10, fontweight='bold')
+                
+                plt.axis('off')
+                plt.savefig(f'obj_probe_multi_{hr}_{kr}_{lr}.pdf', dpi=300)
+                plt.show()
+            #%%         
             if plot_all:
                 fig, ax=plt.subplots()
-                ax.imshow(angle(ob_e_2),cmap='gray')
+                #ax.imshow(angle(ob_e_2),cmap='gray')
+                ax.imshow(angle(ob_w_2),cmap='gray')
                 ax.imshow(abs(pb1),cmap='Reds', alpha=0.7)
+                plt.savefig(f'obj_probe_{hr}_{kr}_{lr}_scan_index_{k}_{i}.pdf',dpi=300)
+                plt.show()
                 
                 fig, ax=plt.subplots()
-                ax.imshow(angle(ob_e_2),cmap='gray')
+                #ax.imshow(angle(ob_e_2),cmap='gray')
+                ax.imshow(angle(ob_w_2),cmap='gray')
                 ax.imshow(abs(pbp),cmap='Reds',alpha=0.7)
-
+                plt.savefig(f'obj_pinhole_{hr}_{kr}_{lr}_scan_index_{k}_{i}.pdf',dpi=300)
                 plt.show()
 
-
+            #%%
             # THIS NEEDS TO BE THROUGHLY CHECKED
             psi_k_2_ideal=spf.fft2(ob_e_2*pbp)
             #psi_k_2_ideal=spf.fftshift(spf.fft2(ob_e_2*pbp))
@@ -414,10 +495,27 @@ for l in tqdm(range(0,nscans)):
             pinhole_DP=pinhole_DP.get()
             psi_k_2_ideal=psi_k_2_ideal.get()
             psf_pinhole=psf_pinhole.get()
-        #    matshow(log(abs(pinhole_DP)**2+1))
+            
+
+            import sys
+            import os
+            sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../../../NN/ptychosaxsNN/')))
+            import utils.ptychosaxsNN_utils as ptNN_U
+            
+            mask = np.load('/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_ZCB_9_3D.npy')
+
+            plt.figure()
+            plt.imshow(abs(pinhole_DP)**2,norm=colors.LogNorm(),cmap='jet')
+            plt.savefig(f'pinhole_DP_extra_conv_{hr}_{kr}_{lr}_scan_index_{k}_{i}.pdf',dpi=300)
+            plt.show()
             
 
             psi_k_2=spf.fftshift(spf.fft2(pb1*ob_e_2))
+            psi_k_2_pp,_,_ = ptNN_U.preprocess_ZCB_9(np.abs(psi_k_2)**2,mask)
+            plt.figure()
+            plt.imshow(psi_k_2_pp[0][0],cmap='jet')
+            plt.savefig(f'conv_DP_{hr}_{kr}_{lr}_scan_index_{k}_{i}.pdf',dpi=300)
+            plt.show()
             # matshow(log(abs(psi_k_2)**2))
             # plt.show()
             
@@ -455,12 +553,13 @@ for l in tqdm(range(0,nscans)):
             # plt.show()
             
             #filename='/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/{}/output_hanning_conv_{:05d}.npz'.format(dr,count)
-            if not os.path.exists(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC'):
-                os.makedirs(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC')    
-            
-            filename=f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC/output_hanning_conv_{hr}_{kr}_{lr}_{count:05d}.npz'
-            print(filename)
-            
+            if save:
+                if not os.path.exists(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC'):
+                    os.makedirs(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC')    
+                
+                filename=f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC/output_hanning_conv_{hr}_{kr}_{lr}_{count:05d}.npz'
+                print(filename)
+                
             if save:
                 np.savez(filename,pinholeDP=pinhole_DP,pinholeDP_extra_conv=pinhole_DP_extra_conv,convDP=conv_DP,obj=ob_e_2,probe=pb1)
                 print(f"saved: {filename}")
@@ -481,5 +580,23 @@ for l in tqdm(range(0,nscans)):
         plt.colorbar(im1)
         plt.colorbar(im2)
         plt.show()
+
+# %%
+
+num=random.randint(0,10800)
+print(f'Using index {num}')
+data=np.load(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/32/output_hanning_conv_{num:05d}.npz')
+for key in data.keys():
+    print(key)
+    try:
+        if key=='obj':
+            plt.imshow(np.abs(data[key]),cmap='gray')
+        elif key=='probe':
+            plt.imshow(np.abs(data[key]),cmap='Reds')
+        else:
+            plt.imshow(data[key],norm=colors.LogNorm(),cmap='jet')
+        plt.show()
+    except:
+        print(f'{key} is not an image')
 
 # %%

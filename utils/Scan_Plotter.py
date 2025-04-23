@@ -5,6 +5,7 @@ from tqdm import tqdm
 from matplotlib import colors
 import sys
 import os
+from skimage import measure
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/utils/')))
 import ptychosaxsNN_utils as ptNN_U
 import importlib
@@ -364,10 +365,10 @@ class Scan_Plotter:
         except KeyboardInterrupt:
             print("\nProcessing interrupted by user (Ctrl+C)")
         
-        # Add colorbar
-        if count > 0:
-            cbar_ax = fig.add_axes([0.95, 0.15, 0.05, 0.7])
-            fig.colorbar(im, cax=cbar_ax)
+        # # Add colorbar
+        # if count > 0:
+        #     cbar_ax = fig.add_axes([0.95, 0.15, 0.05, 0.7])
+        #     fig.colorbar(im, cax=cbar_ax)
         
         plt.tight_layout()
         plt.show()
@@ -435,13 +436,13 @@ class Scan_Plotter:
         else:
             im = ax.imshow(absorption_map, cmap='jet')
         
-        ax.set_title('Absorption Map')
+        #ax.set_title('Absorption Map')
         ax.set_xlabel('X position')
         ax.set_ylabel('Y position')
         
         # Add colorbar
         cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label('Absorption (a.u.)')
+        cbar.set_label('Integrated Intensity (a.u.)')
         
         plt.tight_layout()
         plt.show()
@@ -647,18 +648,25 @@ class Scan_Plotter:
                 # Create inset axes
                 inset_ax = axs[segment_idx].inset_axes([0.65, 0.65, 0.3, 0.3])
                 
-                # Create masked example
-                masked_example = example_pattern.copy()
-                masked_example[~segment_masks[segment_idx]] = 0
+                # # Create masked example
+                # masked_example = example_pattern.copy()
+                # masked_example[~segment_masks[segment_idx]] = 0
                 
                 # Plot masked example
                 if log_scale:
-                    inset_ax.imshow(masked_example, cmap='jet', norm=colors.LogNorm())
+                    inset_ax.imshow(example_pattern, cmap='jet', norm=colors.LogNorm())
                 else:
-                    inset_ax.imshow(masked_example, cmap='jet')
+                    inset_ax.imshow(example_pattern, cmap='jet', clim=(0,1))
+                
+                # Find the boundary of the segment mask
+                contours = measure.find_contours(segment_masks[segment_idx].astype(float), 0.5)
+                for contour in contours:
+                    # Plot the contour with a dashed red line
+                    inset_ax.plot(contour[:, 1], contour[:, 0], '--r', linewidth=1)
+                
                 inset_ax.set_xticks([])
                 inset_ax.set_yticks([])
-                inset_ax.set_title(f'Frame {example_idx}', fontsize=8)
+                #inset_ax.set_title(f'Frame {example_idx}', fontsize=8)
         
         # Hide unused subplots
         for idx in range(num_segments, len(axs)):
