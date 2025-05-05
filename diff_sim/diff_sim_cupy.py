@@ -1,3 +1,4 @@
+#%%
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -500,7 +501,7 @@ if __name__=="__main__":
     probe=cp.asarray(probe)
     
     # resize probe
-    dpsize=1408
+    dpsize=512#1408
     probe = resize_cp(probe,dpsize)
     
     # create ideal probe
@@ -530,7 +531,7 @@ if __name__=="__main__":
 
 
     # Parameters for the q values
-    num_q = 1024  # Number of q values along each axis
+    num_q = 512#1024  # Number of q values along each axis
     q_max = 4.0  # Maximum value of q
 
     #probeFT and resized
@@ -544,8 +545,8 @@ if __name__=="__main__":
 #    plt.show()
     
     #pinhole
-    #psf_pinhole=cp.abs(cp.load('/home/beams/B304014/ptychosaxs/NN/probe_pinhole.npy'))
-    psf_pinhole=cp.load('/home/beams/B304014/ptychosaxs/NN/probe_pinhole.npy')
+    #psf_pinhole=cp.load('/home/beams/B304014/ptychosaxs/NN/probe_pinhole.npy')
+    psf_pinhole=cp.load('/home/beams/PTYCHOSAXS/NN/probe_pinhole.npy')
     psf_pinhole=resize_cp(psf_pinhole,num_q)
 
 #    plt.figure()
@@ -554,11 +555,11 @@ if __name__=="__main__":
  
  
  
-    plot=False
-    dr=16
-    save=True
+    plot=True
+    dr=1111111
+    save=False
 
-    for i in tqdm(range(0,5000)):
+    for i in tqdm(range(0,5)):
         
         # Parameters for the lattice
         lattice_type = 'FCC'  # Type of lattice: 'SC', 'BCC', 'FCC'
@@ -649,3 +650,5 @@ if __name__=="__main__":
 
     #    plt.show()
 
+
+# %%

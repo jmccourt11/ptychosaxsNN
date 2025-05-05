@@ -1885,6 +1885,27 @@ fig.show()
 
 
 #%%
+import scipy.io as sio
+tomo_data=sio.loadmat('/scratch/RS_data_test.mat')['DATA']
+tomo_data[np.isnan(tomo_data)]=0
+center = np.array(tomo_data.shape) // 2
+radius = 40  # Radius of sphere to mask
+x, y, z = np.ogrid[:tomo_data.shape[0], :tomo_data.shape[1], :tomo_data.shape[2]]
+mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
+
+# Apply mask to tomogram
+tomo_data_masked = tomo_data.copy()
+tomo_data_masked[mask] = 0
+
+# Plot the masked tomogram
+fig = plot_3D_tomogram(tomo_data_masked, intensity_threshold=0.3)
+fig.show()
+#%%
+
+
+
+
+
 # Print dimensions
 print(f"Tomogram shape: {tomo_data.shape}")
 

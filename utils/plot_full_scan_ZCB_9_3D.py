@@ -789,7 +789,243 @@ class DiffractionAnalyzer:
             plt.savefig(save_path, dpi=300)
         plt.show()
 
+    def extract_sample_patterns(self, threshold=0.1, use_deconvolved=False, show_mask=False):
+        """
+        Extract diffraction patterns that overlap with the sample region.
+        
+        Args:
+            threshold (float): Threshold for considering a region as sample (default: 0.1)
+            use_deconvolved (bool): Whether to use deconvolved patterns instead of raw data
+            show_mask (bool): Whether to display the binary mask visualization
+            
+        Returns:
+            tuple: (patterns, indices) where patterns are the extracted patterns and indices are their positions
+        """
+        if self.positions is None:
+            self.load_positions()
+            
+        data_to_plot = self.deconvolved_patterns if use_deconvolved else self.dps
+        if data_to_plot is None:
+            raise ValueError("No data available to extract")
+            
+        # Load the object
+        obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
+        obj = sio.loadmat(obj_path)["object_roi"]
+        obj = np.flipud(np.fliplr(obj))
+        
+        # Create a binary mask of the sample region
+        obj_abs = np.abs(obj)
+        obj_mask = obj_abs < threshold * np.max(obj_abs)
+        
+        if show_mask:
+            self._visualize_sample_mask(obj, obj_mask, obj_abs, threshold)
+        
+        # Calculate object extent
+        obj_extent = [
+            np.min(self.positions[:, 2]),
+            np.max(self.positions[:, 2]),
+            np.min(self.positions[:, 1]),
+            np.max(self.positions[:, 1])
+        ]
+        
+        # Calculate scale factors (nm to pixels)
+        scale_x = obj.shape[1] / (obj_extent[1] - obj_extent[0])
+        scale_y = obj.shape[0] / (obj_extent[3] - obj_extent[2])
+        
+        # Initialize lists to store patterns and their indices
+        sample_patterns = []
+        sample_indices = []
+        
+        # Check each pattern position
+        for idx, pos in enumerate(self.positions):
+            # Convert position from nm to pixels
+            x_px = int((pos[2] - obj_extent[0]) * scale_x)
+            y_px = int((pos[1] - obj_extent[2]) * scale_y)
+            
+            # Check if position is within object bounds
+            if (0 <= x_px < obj.shape[1] and 0 <= y_px < obj.shape[0]):
+                # If the position is over the sample region, add the pattern
+                if obj_mask[y_px, x_px]:
+                    sample_patterns.append(data_to_plot[idx])
+                    sample_indices.append(idx)
+        
+        return np.array(sample_patterns), np.array(sample_indices)
+
+    def _visualize_sample_mask(self, obj, obj_mask, obj_abs, threshold):
+        """
+        Visualize the binary mask used to identify sample regions.
+        
+        Args:
+            obj (np.ndarray): The complex object array
+            obj_mask (np.ndarray): Binary mask of sample regions
+            obj_abs (np.ndarray): Absolute value of the object
+            threshold (float): Threshold used to create the mask
+        """
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
+        
+        # Plot the phase of the object
+        im1 = ax1.imshow(np.angle(obj), cmap='gray')
+        ax1.set_title('Object Phase')
+        plt.colorbar(im1, ax=ax1)
+        
+        # Plot the absolute value with threshold line
+        im2 = ax2.imshow(obj_abs, cmap='viridis')
+        ax2.set_title(f'Absolute Value (Threshold: {threshold:.2f})')
+        plt.colorbar(im2, ax=ax2)
+        ax2.axhline(y=threshold * np.max(obj_abs), color='r', linestyle='--', 
+                   label=f'Threshold: {threshold:.2f}')
+        
+        # Plot the binary mask
+        im3 = ax3.imshow(obj_mask, cmap='binary')
+        ax3.set_title('Sample Region Mask')
+        plt.colorbar(im3, ax=ax3)
+        
+        # Add scan positions to the mask plot
+        obj_extent = [
+            np.min(self.positions[:, 2]),
+            np.max(self.positions[:, 2]),
+            np.min(self.positions[:, 1]),
+            np.max(self.positions[:, 1])
+        ]
+        
+        # Calculate scale factors
+        scale_x = obj.shape[1] / (obj_extent[1] - obj_extent[0])
+        scale_y = obj.shape[0] / (obj_extent[3] - obj_extent[2])
+        
+        # Plot positions
+        for pos in self.positions:
+            x_px = int((pos[2] - obj_extent[0]) * scale_x)
+            y_px = int((pos[1] - obj_extent[2]) * scale_y)
+            if (0 <= x_px < obj.shape[1] and 0 <= y_px < obj.shape[0]):
+                if obj_mask[y_px, x_px]:
+                    ax3.plot(x_px, y_px, 'r.', markersize=2)  # Red for sample positions
+                else:
+                    ax3.plot(x_px, y_px, 'b.', markersize=2)  # Blue for non-sample positions
+        
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def process_multiple_scans(scan_numbers, base_path, dp_size, center_offset_y, center_offset_x, 
+                             threshold=0.5, model_path=None, output_file='sample_indices.h5',
+                             show_mask=False):
+        """
+        Process multiple scans and save their sample pattern indices to an H5 file.
+        Results are written to the file after each scan is processed.
+        
+        Args:
+            scan_numbers (list): List of scan numbers to process
+            base_path (str): Base path for data
+            dp_size (int): Size of diffraction patterns
+            center_offset_y (int): Y center offset
+            center_offset_x (int): X center offset
+            threshold (float): Threshold for sample mask
+            model_path (str): Path to model if using deconvolution
+            output_file (str): Path to output H5 file
+            show_mask (bool): Whether to show mask visualization for each scan
+        """
+        import h5py
+        import os
+        from datetime import datetime
+        
+        # Initialize dictionary to store results
+        all_indices = {}
+        
+        # Create backup filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"{os.path.splitext(output_file)[0]}_{timestamp}_backup.h5"
+        
+        # Process each scan
+        for i, scan_number in enumerate(scan_numbers):
+            try:
+                print(f"\nProcessing scan {scan_number} ({i+1}/{len(scan_numbers)})")
+                
+                # Initialize analyzer for this scan
+                analyzer = DiffractionAnalyzer(
+                    base_path=base_path,
+                    scan_number=scan_number,
+                    dp_size=dp_size,
+                    center_offset_y=center_offset_y,
+                    center_offset_x=center_offset_x
+                )
+                
+                # Load data
+                analyzer.load_and_crop_data()
+                
+                # Get sample pattern indices
+                _, indices = analyzer.extract_sample_patterns(
+                    threshold=threshold,
+                    use_deconvolved=False,  # Using raw patterns since we don't need deconvolved ones for indices
+                    show_mask=show_mask
+                )
+                
+                # Store indices for this scan
+                all_indices[str(scan_number)] = indices
+                
+                print(f"Found {len(indices)} sample patterns for scan {scan_number}")
+                
+                # Write current results to both main and backup files
+                with h5py.File(output_file, 'a') as f:
+                    # Create or update dataset for this scan
+                    if f'scan_{scan_number}' in f:
+                        del f[f'scan_{scan_number}']  # Delete existing dataset if it exists
+                    f.create_dataset(f'scan_{scan_number}', data=indices)
+                    
+                    # Add metadata if it's the first scan
+                    if i == 0:
+                        f.attrs['creation_date'] = timestamp
+                        f.attrs['threshold'] = threshold
+                        f.attrs['dp_size'] = dp_size
+                
+                # Write to backup file
+                with h5py.File(backup_file, 'a') as f:
+                    if f'scan_{scan_number}' in f:
+                        del f[f'scan_{scan_number}']
+                    f.create_dataset(f'scan_{scan_number}', data=indices)
+                    
+                    # Add metadata if it's the first scan
+                    if i == 0:
+                        f.attrs['creation_date'] = timestamp
+                        f.attrs['threshold'] = threshold
+                        f.attrs['dp_size'] = dp_size
+                
+                print(f"Saved results for scan {scan_number} to {output_file} and backup")
+                
+            except Exception as e:
+                print(f"Error processing scan {scan_number}: {str(e)}")
+                continue
+        
+        print(f"\nCompleted processing {len(all_indices)} out of {len(scan_numbers)} scans")
+        print(f"Results saved to {output_file}")
+        print(f"Backup saved to {backup_file}")
+        return all_indices
+
+    @staticmethod
+    def load_sample_indices(h5_file):
+        """
+        Load sample pattern indices from an H5 file.
+        
+        Args:
+            h5_file (str): Path to H5 file containing indices
+            
+        Returns:
+            dict: Dictionary mapping scan numbers to arrays of indices
+        """
+        import h5py
+        
+        indices = {}
+        with h5py.File(h5_file, 'r') as f:
+            for key in f.keys():
+                scan_number = key.split('_')[1]  # Extract scan number from 'scan_XXXX'
+                indices[scan_number] = f[key][:]
+        
+        return indices
+
 #%%
+sample_dir='ZCB_9_3D_'
+base_directory='/scratch/2025_Feb/'
+
+
 # Read the file, skipping the first row (which starts with #) and using the second row as headers
 df = pd.read_csv('/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/ZCB9_3D_alignment_shifts_28nm.txt', 
                  comment='#',  # Skip lines starting with #
@@ -819,6 +1055,8 @@ for scan in selected_scans:
 ncols=36
 nrows=29
 center=(517,575)
+
+(526,576)
 
 center_offset_y=1043//2-center[0]
 center_offset_x=981//2-center[1]
@@ -890,19 +1128,11 @@ plt.show()
 # # %%
 # analyzer.plot_difference_map(scan_index=664,use_corrected_positions=False,use_deconvolved=True,scale_factor=2)
 
-
-
-
-
-
-
-
-
 # %%
 
 analyzer = DiffractionAnalyzer(
         base_path='/net/micdata/data2/12IDC/2025_Feb/ptycho/',
-        scan_number=5065,
+        scan_number=5025,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
@@ -913,9 +1143,66 @@ analyzer.load_and_crop_data()
 analyzer.load_model(model_path=model_path)
 analyzer.perform_deconvolution()
 
+
+
+#%%
 # Load probe
 analyzer.load_probe(pb1)
 # analyzer.calculate_probe_radius(show_fit=True)
 analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=False,scale_factor=2,show_probe_size=True,save_path=f"ZCB_9_3D_scan_overlay_original_{analyzer.scan_number}.pdf")
 analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=True,scale_factor=2,show_probe_size=False,save_path=f"ZCB_9_3D_scan_overlay_deconvolved_{analyzer.scan_number}.pdf")
+
+
+
+# %%
+# After initializing and loading data into analyzer
+sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.5, use_deconvolved=True,show_mask=True)
+
+
+#%%
+# You can then use these patterns for further analysis
+print(f"Found {len(sample_patterns)} patterns over the sample region")
+print(f"Pattern indices: {sample_indices}")
+# Plot a pattern (100)
+plt.figure(figsize=(10, 10))
+plt.imshow(sample_patterns[100], norm=colors.LogNorm())
+plt.title(f'Pattern at index {sample_indices[0]}')
+plt.colorbar()
+plt.show()
+
+# Plot sum of all patterns
+plt.figure(figsize=(10, 10))
+sf=12
+bkg=0.1
+plt.imshow(np.sum([10**(sample_patterns[i]*sf+bkg) for i in range(len(sample_patterns))], axis=0), norm=colors.LogNorm())
+plt.colorbar()
+plt.show()
+
+
+# %%
+# Define your scan parameters
+scan_numbers = [5025, 5065, 5102]  # Add your scan numbers here
+base_path = '/net/micdata/data2/12IDC/2025_Feb/ptycho/'
+dp_size = 256
+center_offset_y = center_offset_y  # Using the existing variable
+center_offset_x = center_offset_x  # Using the existing variable
+
+# #Process all scans and save indices
+# indices = DiffractionAnalyzer.process_multiple_scans(
+#     scan_numbers=df['scanNo'].values.tolist(),#scan_numbers,
+#     base_path=base_path,
+#     dp_size=dp_size,
+#     center_offset_y=center_offset_y,
+#     center_offset_x=center_offset_x,
+#     threshold=0.5,  # Adjust threshold as needed
+#     output_file='ZCB_9_3D_sample_indices.h5',
+#     show_mask=False  # Set to True if you want to see the mask for each scan
+# )
+
+# Later, you can load the indices from the file
+loaded_indices = DiffractionAnalyzer.load_sample_indices('ZCB_9_3D_sample_indices.h5')
+
+# Print some information about the loaded indices
+for scan_number, scan_indices in loaded_indices.items():
+    print(f"Scan {scan_number}: {len(scan_indices)} sample patterns")
 # %%

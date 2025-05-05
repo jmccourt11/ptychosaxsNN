@@ -46,7 +46,7 @@ def log10_custom(arr):
     result[positive_mask] = log10_positive
     
     # Set non-positive entries to the minimum log10 value
-    result[~positive_mask] = min_log10_value
+    result[~positive_mask] = 0#min_log10_value
     
     return result
 
