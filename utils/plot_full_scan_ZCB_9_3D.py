@@ -1056,17 +1056,21 @@ ncols=36
 nrows=29
 center=(517,575)
 
-(526,576)
+#(526,576)
 
 center_offset_y=1043//2-center[0]
 center_offset_x=981//2-center[1]
 
 model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/ZCB_9_3D/best_model_ZCB_9_Unet_epoch_500_pearson_loss.pth')
 
+#%%
 obj=tifffile.imread(f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{selected_scans[0]['scan']}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff")
+obj=tifffile.imread(f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff")
+
 plt.imshow(obj,cmap='gray')
 plt.show()
 
+#%%
 obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{selected_scans[0]['scan']}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
 obj = sio.loadmat(obj_path)["object_roi"]
 plt.imshow(np.angle(obj),cmap='gray')
@@ -1077,13 +1081,19 @@ plt.plot(-probe_positions[:,0],probe_positions[:,1],'o')
 plt.show()
 
 #%%
-ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
+ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
 pb=ob['probe']
 # Only first mode
 pb1=pb[:,:,0,0]
-plt.imshow(np.abs(pb1),cmap='gray')
+
+fig,ax=plt.subplots(1,1,figsize=(5,5))
+ax.imshow(obj,cmap='gray')
+ax.axis('off')
+# ax.imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1))),cmap='jet',norm=colors.LogNorm())
+# ax.axis('off')
 plt.show()
 
+#%%
 
 # #%%
 # # Process each selected scan
@@ -1132,14 +1142,17 @@ plt.show()
 
 analyzer = DiffractionAnalyzer(
         base_path='/net/micdata/data2/12IDC/2025_Feb/ptycho/',
-        scan_number=5025,
+        scan_number=5065,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
 )
 
+
+
 # Load and process data
 analyzer.load_and_crop_data()
+#%%
 analyzer.load_model(model_path=model_path)
 analyzer.perform_deconvolution()
 
@@ -1152,11 +1165,23 @@ analyzer.load_probe(pb1)
 analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=False,scale_factor=2,show_probe_size=True,save_path=f"ZCB_9_3D_scan_overlay_original_{analyzer.scan_number}.pdf")
 analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=True,scale_factor=2,show_probe_size=False,save_path=f"ZCB_9_3D_scan_overlay_deconvolved_{analyzer.scan_number}.pdf")
 
+#%%
+fig,ax=plt.subplots(1,1,figsize=(5,5))
+#ax.imshow(analyzer.dps[665],norm=colors.LogNorm())
+ax.imshow(analyzer.deconvolved_patterns[665])
+ax.axis('off')
+pattern_size=255
+rect = plt.Rectangle((0, 0), 
+                    pattern_size, pattern_size,
+                    fill=False, color='red', linewidth=6,
+                    label=f'Selected Pattern (Index: {664})')
+ax.add_patch(rect)
+plt.show()
 
 
 # %%
 # After initializing and loading data into analyzer
-sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.5, use_deconvolved=True,show_mask=True)
+sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.6, use_deconvolved=True,show_mask=True)
 
 
 #%%
@@ -1165,15 +1190,15 @@ print(f"Found {len(sample_patterns)} patterns over the sample region")
 print(f"Pattern indices: {sample_indices}")
 # Plot a pattern (100)
 plt.figure(figsize=(10, 10))
-plt.imshow(sample_patterns[100], norm=colors.LogNorm())
+plt.imshow(sample_patterns[0], norm=colors.LogNorm())
 plt.title(f'Pattern at index {sample_indices[0]}')
 plt.colorbar()
 plt.show()
 
 # Plot sum of all patterns
 plt.figure(figsize=(10, 10))
-sf=12
-bkg=0.1
+sf=1
+bkg=0
 plt.imshow(np.sum([10**(sample_patterns[i]*sf+bkg) for i in range(len(sample_patterns))], axis=0), norm=colors.LogNorm())
 plt.colorbar()
 plt.show()

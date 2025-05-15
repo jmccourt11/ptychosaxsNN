@@ -631,7 +631,7 @@ def plot_3D_tomogram(tomo_data, intensity_threshold=0.1):
             size=3,
             color=intensities_plot,
             colorscale='Greys',  # 'Viridis',
-            opacity=0.2,
+            opacity=0.8,
             colorbar=dict(title='Intensity')
         ),
         hovertemplate=(
@@ -1857,15 +1857,180 @@ def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h,
         return fig, best_angle, best_rmsd
     else:
         return None, best_angle, best_rmsd
-
-
+#%%
+def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cellinfo_data, hs, ks, ls, threshold_D=0.5, threshold_tomo_FFT=0.002, q_cutoff=0.07, peak_distance_threshold=0.01):
+    """
+    Create a combined plot showing reciprocal space data, FFT, and unit cell peaks.
+    
+    Args:
+        tomo_data: Real space tomogram data
+        tomo_data_RS: Reciprocal space data
+        tomo_data_RS_qs: Q-vectors for reciprocal space data
+        cellinfo_data: Unit cell information
+        hs, ks, ls: Miller indices for unit cell peaks
+        threshold_D: Threshold for reciprocal space data magnitude filtering
+        threshold_tomo_FFT: Threshold for FFT magnitude filtering
+        q_cutoff: Radius of sphere to mask out (in Å⁻¹) - only applied to reciprocal space data
+        peak_distance_threshold: Maximum distance to consider a unit cell peak as "close" to high-intensity points
+    """
+    # Create figure
+    fig = go.Figure()
+    
+    # 1. Plot reciprocal space data
+    magnitude = tomo_data_RS
+    KX, KY, KZ = tomo_data_RS_qs[:,0], tomo_data_RS_qs[:,1], tomo_data_RS_qs[:,2]
+    
+    # Flatten and filter
+    kx_flat = KX.flatten()
+    ky_flat = KY.flatten()
+    kz_flat = KZ.flatten()
+    magnitude_flat = magnitude.flatten()
+    
+    # Calculate q magnitude for each point
+    q_magnitude = np.sqrt(kx_flat**2 + ky_flat**2 + kz_flat**2)
+    
+    # Apply both magnitude threshold and q_cutoff mask only to reciprocal space data
+    mask = (q_magnitude > q_cutoff)
+    kx_filtered = kx_flat[mask]
+    ky_filtered = ky_flat[mask]
+    kz_filtered = kz_flat[mask]
+    magnitude_filtered = magnitude_flat[mask]
+    
+    mask = (magnitude_filtered > threshold_D * np.max(magnitude_filtered)) 
+    kx_filtered = kx_filtered[mask]
+    ky_filtered = ky_filtered[mask]
+    kz_filtered = kz_filtered[mask]
+    magnitude_filtered = magnitude_filtered[mask]
+    
+    # Add reciprocal space data
+    fig.add_trace(go.Scatter3d(
+        x=kx_filtered,
+        y=ky_filtered,
+        z=kz_filtered,
+        mode='markers',
+        marker=dict(
+            size=5,
+            color=magnitude_filtered,
+            colorscale='Viridis',
+            opacity=0.4,
+            colorbar=dict(title='RS Magnitude')
+        ),
+        name='Reciprocal Space Data'
+    ))
+    
+    # 2. Compute and plot FFT
+    magnitude_fft, KX_fft, KY_fft, KZ_fft = compute_fft_q(tomo_data, use_vignette=True, pixel_size=56)
+    
+    # Flatten and filter FFT data (only magnitude threshold, no q_cutoff)
+    kx_fft_flat = KX_fft.flatten()
+    ky_fft_flat = KY_fft.flatten()
+    kz_fft_flat = KZ_fft.flatten()
+    magnitude_fft_flat = magnitude_fft.flatten()
+    
+    # Apply only magnitude threshold to FFT data
+    mask_fft = (magnitude_fft_flat > threshold_tomo_FFT * np.max(magnitude_fft))
+    kx_fft_filtered = kx_fft_flat[mask_fft]
+    ky_fft_filtered = ky_fft_flat[mask_fft]
+    kz_fft_filtered = kz_fft_flat[mask_fft]
+    magnitude_fft_filtered = magnitude_fft_flat[mask_fft]
+    
+    # Add FFT data
+    fig.add_trace(go.Scatter3d(
+        x=kx_fft_filtered,
+        y=ky_fft_filtered,
+        z=kz_fft_filtered,
+        mode='markers',
+        marker=dict(
+            size=5,
+            color=magnitude_fft_filtered,
+            colorscale='Plasma',
+            opacity=0.4,
+            colorbar=dict(title='FFT Magnitude')
+        ),
+        name='FFT Data'
+    ))
+    
+    # 3. Plot unit cell peaks (only those near high-intensity points)
+    vs = []
+    hkl_list = []  # Store hkl indices for each peak
+    for i, h in enumerate(hs):
+        v = hs[i]*cellinfo_data['recilatticevectors'][0] + \
+            ks[i]*cellinfo_data['recilatticevectors'][1] + \
+            ls[i]*cellinfo_data['recilatticevectors'][2]
+        vs.append(v)
+        hkl_list.append(f"({h},{ks[i]},{ls[i]})")
+    
+    vs = np.array(vs)
+    
+    # Combine high-intensity points from both FFT and reciprocal space data
+    high_intensity_points = np.column_stack((
+        np.concatenate([kx_filtered, kx_fft_filtered]),
+        np.concatenate([ky_filtered, ky_fft_filtered]),
+        np.concatenate([kz_filtered, kz_fft_filtered])
+    ))
+    
+    # Find unit cell peaks that are close to high-intensity points
+    close_peaks = []
+    close_peaks_hkl = []
+    used_regions = set()  # Keep track of which high-intensity regions have been matched
+    
+    for i, peak in enumerate(vs):
+        # Calculate distances to all high-intensity points
+        distances = np.sqrt(np.sum((high_intensity_points - peak)**2, axis=1))
+        min_dist_idx = np.argmin(distances)
+        min_dist = distances[min_dist_idx]
+        
+        # If the peak is close enough and this region hasn't been matched yet
+        if min_dist < peak_distance_threshold and min_dist_idx not in used_regions:
+            close_peaks.append(peak)
+            close_peaks_hkl.append(hkl_list[i])
+            used_regions.add(min_dist_idx)
+    
+    close_peaks = np.array(close_peaks)
+    
+    if len(close_peaks) > 0:
+        # Add filtered unit cell peaks with labels
+        fig.add_trace(go.Scatter3d(
+            x=close_peaks.T[0],
+            y=close_peaks.T[1],
+            z=close_peaks.T[2],
+            mode='markers+text',
+            marker=dict(
+                size=10,
+                color='red',
+                opacity=0.8,
+                symbol='diamond'
+            ),
+            text=close_peaks_hkl,
+            textposition="top center",
+            name='Unit Cell Peaks'
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title="Combined Reciprocal Space Visualization",
+        scene=dict(
+            xaxis_title="Qx (Å⁻¹)",
+            yaxis_title="Qy (Å⁻¹)",
+            zaxis_title="Qz (Å⁻¹)",
+            aspectmode='cube',
+            # xaxis=dict(range=[-0.1, 0.1]),
+            # yaxis=dict(range=[-0.1, 0.1]),
+            # zaxis=dict(range=[-0.1, 0.1])
+        ),
+        width=1000,
+        height=1000,
+        showlegend=True
+    )
+    
+    return fig
 
 #%%
 # Load the data
 #tomogram = "/net/micdata/data2/12IDC/2024_Dec/misc/JM02_3D/ROI2_Ndp512_MLc_p10_gInf_Iter1000/recons/tomogram_alignment_recon_cropped_14nm_2.tif"
 #tomogram = "/net/micdata/data2/12IDC//2021_Nov/results/tomography/Sample6_tomo6_SIRT_tomogram.tif"
 tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_56nm.tiff"
-tomo_data = tifffile.imread(tomogram).swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
+tomo_data = tifffile.imread(tomogram)#.swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
 
 #Rotate the tomogram
 axis='z'
@@ -1884,37 +2049,16 @@ fig.show()
 
 
 
-#%%
-import scipy.io as sio
-tomo_data=sio.loadmat('/scratch/RS_data_test.mat')['DATA']
-tomo_data[np.isnan(tomo_data)]=0
-center = np.array(tomo_data.shape) // 2
-radius = 40  # Radius of sphere to mask
-x, y, z = np.ogrid[:tomo_data.shape[0], :tomo_data.shape[1], :tomo_data.shape[2]]
-mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
-
-# Apply mask to tomogram
-tomo_data_masked = tomo_data.copy()
-tomo_data_masked[mask] = 0
-
-# Plot the masked tomogram
-fig = plot_3D_tomogram(tomo_data_masked, intensity_threshold=0.3)
-fig.show()
-#%%
-
-
-
-
-
 # Print dimensions
 print(f"Tomogram shape: {tomo_data.shape}")
 
 #magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
-magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=56,scale=2.2)
-   
+magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=56,scale=1)
+
+
 
 # Define a threshold for the magnitude
-threshold = 3e-3* np.max(magnitude)  # Example: 10% of the max magnitude
+threshold = 0.002* np.max(magnitude)  # Example: 10% of the max magnitude
 
 # Flatten the arrays
 kx_flat = KX.flatten()
@@ -1978,10 +2122,25 @@ fig_fft.update_layout(
 
 # Run test
 # Load and plot cell info
-cellinfo_data = load_cellinfo_data("/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/cellinfo.mat")
-hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
-ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
-ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+#cellinfo_data = load_cellinfo_data("/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/cellinfo.mat")
+cellinfo_data = load_cellinfo_data("cellinfo.mat")
+# hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
+# ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
+# ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+
+
+from itertools import product
+# Generate all combinations for h, k, l in [-1, 0, 1]
+hkl = np.array(list(product([-1, 0, 1], repeat=3)))
+
+# Separate into hs, ks, ls arrays
+hs = hkl[:, 0]
+ks = hkl[:, 1]
+ls = hkl[:, 2]
+
+print("hs:", hs)
+print("ks:", ks)
+print("ls:", ls)
 vs=[]
 
 # Voxel size
@@ -2039,6 +2198,172 @@ fig_fft.update_layout(
 )
 
 fig_fft.show()
+
+
+
+
+
+
+
+
+
+
+
+#%%
+import scipy.io as sio
+tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
+tomo_data_RS=tomo_data_RS_file['DATA']#.swapaxes(1,2)
+tomo_data_RS_qs=tomo_data_RS_file['Qv']
+# nx, ny, nz = tomo_data_RS.shape
+# QX = tomo_data_RS_qs[:, 0].reshape(nx, ny, nz)
+# QY = tomo_data_RS_qs[:, 1].reshape(nx, ny, nz)
+# QZ = tomo_data_RS_qs[:, 2].reshape(nx, ny, nz)
+
+tomo_data_RS[np.isnan(tomo_data_RS)]=0
+tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
+#%%
+center = np.array(tomo_data_RS.shape) // 2
+radius = 40  # Radius of sphere to mask
+x, y, z = np.ogrid[:tomo_data_RS.shape[0], :tomo_data_RS.shape[1], :tomo_data_RS.shape[2]]
+mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
+
+# Apply mask to tomogram
+tomo_data_RS_masked = tomo_data_RS.copy()
+tomo_data_RS_masked[mask] = 0
+
+# # Plot the masked tomogram
+# fig = plot_3D_tomogram(tomo_data_RS_masked, intensity_threshold=0.5)
+# fig.show()
+
+
+magnitude = tomo_data_RS_masked
+KX,KY,KZ=tomo_data_RS_qs[:,0],tomo_data_RS_qs[:,1],tomo_data_RS_qs[:,2]
+# Define a threshold for the magnitude
+threshold = 0.5* np.max(magnitude)  # Example: 10% of the max magnitude
+
+# Flatten the arrays
+kx_flat = KX.flatten()
+ky_flat = KY.flatten()
+kz_flat = KZ.flatten()
+magnitude_flat = magnitude.flatten()
+
+mask = (magnitude_flat > threshold)
+
+kx_filtered = kx_flat[mask]
+ky_filtered = ky_flat[mask]
+kz_filtered = kz_flat[mask]
+magnitude_filtered = magnitude_flat[mask]
+# Create a 3D scatter plot of the FFT magnitude
+fig_fft = go.Figure(data=go.Scatter3d(
+    x=kx_filtered,
+    y=ky_filtered,
+    z=kz_filtered,
+    mode='markers',
+    marker=dict(
+        size=10,
+        color=magnitude_filtered,
+        colorscale='Viridis',
+        opacity=0.4,
+        colorbar=dict(title='Magnitude')
+    )
+))
+# Run test
+# Load and plot cell info
+cellinfo_data = load_cellinfo_data("cellinfo.mat")
+hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
+ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
+ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
+# hs=np.array([4,4,0,0,-4,-4,0,0,4,-4,4,-4])
+# ks=np.array([4,-4,4,4,-4,4,-4,-4,0,0,0,0])
+# ls=np.array([0,0,4,-4,0,0,-4,4,0,4,-4,-4])
+vs=[]
+
+for i,h in enumerate(hs):
+    v=hs[i]*cellinfo_data['recilatticevectors'][0]+ks[i]*cellinfo_data['recilatticevectors'][1]+ls[i]*cellinfo_data['recilatticevectors'][2]
+    vs.append(v)
+
+vs=np.array(vs)
+# fig_fft.add_trace(go.Scatter3d(
+#     x=vs.T[0],
+#     y=vs.T[1],
+#     z=vs.T[2],
+#     mode='markers',
+#     marker=dict(size=10, color='red', opacity=0.8),
+#     name='Cell Info'
+# ))
+
+
+fig_fft.update_layout(
+    title="3D FFT Magnitude with Threshold",
+    scene=dict(
+        xaxis_title="KX",
+        yaxis_title="KY",
+        zaxis_title="KZ",
+        aspectmode='cube'
+    ),
+    width=800, height=800
+)
+
+# # Example: set the same range for all axes
+# qmin = -0.1  # set to your desired min
+# qmax = 0.1   # set to your desired max
+
+# fig_fft.update_layout(
+#     scene=dict(
+#         xaxis=dict(title='Qx', range=[qmin, qmax]),
+#         yaxis=dict(title='Qy', range=[qmin, qmax]),
+#         zaxis=dict(title='Qz', range=[qmin, qmax]),
+#         aspectmode='cube'
+#     )
+# )
+
+#%%
+tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
+tomo_data_RS=tomo_data_RS_file['DATA']#.swapaxes(1,2)
+tomo_data_RS_qs=tomo_data_RS_file['Qv']
+tomo_data_RS[np.isnan(tomo_data_RS)]=0
+tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
+
+# Generate Miller indices up to 3rd order
+def generate_miller_indices(max_order=3):
+    """
+    Generate Miller indices (h,k,l) up to specified order.
+    Excludes (0,0,0) and includes all combinations where |h|,|k|,|l| ≤ max_order.
+    """
+    indices = []
+    for h in range(-max_order, max_order + 1):
+        for k in range(-max_order, max_order + 1):
+            for l in range(-max_order, max_order + 1):
+                # Skip the origin
+                if h == 0 and k == 0 and l == 0:
+                    continue
+                indices.append([h, k, l])
+    return np.array(indices)
+
+# Generate indices up to 3rd order
+miller_indices = generate_miller_indices(9)
+hs = miller_indices[:, 0]
+ks = miller_indices[:, 1]
+ls = miller_indices[:, 2]
+
+# Create the combined plot
+fig = plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cellinfo_data, hs, ks, ls, threshold_D=0.35,threshold_tomo_FFT=0.002, q_cutoff=0.07, peak_distance_threshold=0.0012)
+fig.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 #%%

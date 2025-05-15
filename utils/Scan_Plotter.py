@@ -292,7 +292,7 @@ class Scan_Plotter:
         segment_masks : list of arrays
             List of boolean masks for each segment
         """
-        return ptNN_U.create_azimuthal_segments((self.dpsize, self.dpsize), center=None, 
+        return ptNN_U.create_azimuthal_segments((self.dpsize//4, self.dpsize//4), center=None, 
                                         num_segments=num_segments,
                                         inner_radius=inner_radius, 
                                         outer_radius=outer_radius)

@@ -12,6 +12,7 @@ import pandas as pd
 import glob
 import scipy.io as sio
 import scipy.fft as spf
+#%%
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
@@ -319,7 +320,7 @@ class DiffractionAnalyzer:
             
         return results
 
-    def plot_full_scan(self, use_deconvolved=False, shift_y=0, shift_x=0, scale_factor=2.0, use_corrected_positions=False, highlight_index=None):
+    def plot_full_scan(self, use_deconvolved=False, shift_y=0, shift_x=0, scale_factor=2.0, use_corrected_positions=False, highlight_index=None, show_local_fft=False):
         """
         Plot full scan of either original or deconvolved patterns using actual position data.
         Places each diffraction pattern at its corresponding position in the grid.
@@ -332,6 +333,7 @@ class DiffractionAnalyzer:
             use_corrected_positions (bool): Whether to use corrected positions from ptychography reconstruction
                                           (only affects probe-object multiplication)
             highlight_index (int, optional): Index of the pattern to highlight
+            show_local_fft (bool): If True, show local FFT of object ROI at highlighted scan position
         """
         if self.positions is None:
             self.load_positions()
@@ -361,9 +363,8 @@ class DiffractionAnalyzer:
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(30, 10))
         
         # Load and process the reconstructed object
-        #obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff"
-        #obj = tifffile.imread(obj_path)
-        obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
+        #obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZC4_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
+        obj_path = f'{self.base_path}/results/{self.sample_dir}/fly{self.scan_number}/roi0_Ndp256/{self.recon_path}/Niter1000.mat'
         obj = sio.loadmat(obj_path)["object_roi"]
         
         # Only flip horizontally to match coordinate system
@@ -468,6 +469,65 @@ class DiffractionAnalyzer:
         plt.tight_layout()
         plt.show()
 
+        # --- Local FFT ROI and comparison to deconvolved pattern ---
+        if highlight_index is not None and show_local_fft:
+            # 1. Get probe radius in pixels
+            if not hasattr(self, 'probe'):
+                raise ValueError("Probe must be loaded to determine beam size for local FFT.")
+            probe_radius_px = self.calculate_probe_radius()
+            # 2. Get scan position in nm
+            pos_nm = shifted_positions_exp[highlight_index]
+            # 3. Convert nm to pixel coordinates in object array
+            #    (object extent: [xmin, xmax, ymin, ymax])
+            obj_shape = obj.shape
+            obj_extent = [
+                np.min(self.positions[:, 2]),
+                np.max(self.positions[:, 2]),
+                np.min(self.positions[:, 1]),
+                np.max(self.positions[:, 1])
+            ]
+            scale_x = obj_shape[1] / (obj_extent[1] - obj_extent[0])
+            scale_y = obj_shape[0] / (obj_extent[3] - obj_extent[2])
+            x_px = int((pos_nm[2] - obj_extent[0]) * scale_x)
+            y_px = int((pos_nm[1] - obj_extent[2]) * scale_y)
+            # 4. Extract circular ROI from object
+            y1 = int(max(0, y_px - probe_radius_px))
+            y2 = int(min(obj_shape[0], y_px + probe_radius_px))
+            x1 = int(max(0, x_px - probe_radius_px))
+            x2 = int(min(obj_shape[1], x_px + probe_radius_px))
+            obj_roi = obj[y1:y2, x1:x2]
+            h, w = obj_roi.shape
+            Y, X = np.ogrid[:h, :w]
+            mask = (Y - (y_px - y1))**2 + (X - (x_px - x1))**2 <= probe_radius_px**2
+            obj_roi_masked = obj_roi * mask
+            # 5. Apply vignette (2D Hann window)
+            win_row = np.hanning(h)
+            win_col = np.hanning(w)
+            window = np.outer(win_row, win_col)
+            obj_roi_vignette = obj_roi_masked * window
+            # 6. Compute FFT
+            fft_result = np.fft.fftshift(np.fft.fft2(obj_roi_vignette))
+            fft_mag = np.log1p(np.abs(fft_result))
+            # 7. Get deconvolved pattern for this scan position
+            deconv_pattern = self.deconvolved_patterns[highlight_index] if self.deconvolved_patterns is not None else None
+            # 8. Plot comparison
+            fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+            axs[0].imshow(np.angle(obj), cmap='gray')
+            circ = plt.Circle((x_px, y_px), probe_radius_px, fill=False, color='r', linewidth=2)
+            axs[0].add_patch(circ)
+            axs[0].set_title('Object with ROI')
+            axs[0].set_xlim(x_px - 2*probe_radius_px, x_px + 2*probe_radius_px)
+            axs[0].set_ylim(y_px + 2*probe_radius_px, y_px - 2*probe_radius_px)
+            axs[1].imshow(fft_mag, cmap='jet')
+            axs[1].set_title('Local FFT (ROI)')
+            if deconv_pattern is not None:
+                axs[2].imshow(deconv_pattern, cmap='jet', norm=colors.LogNorm())
+                axs[2].set_title('Deconvolved Pattern')
+            else:
+                axs[2].text(0.5, 0.5, 'No deconvolved pattern', ha='center', va='center')
+            plt.tight_layout()
+            plt.show()
+
     def plot_shifted_tomogram_scan(self, df, use_deconvolved=False):
         """
         Plot the scan with shifts applied from tomographic alignment data.
@@ -535,7 +595,8 @@ class DiffractionAnalyzer:
         shifted_positions[:, 2] += shift_x_nm
         
         # Load object
-        obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff"
+        #obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZC4_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff"
+        obj_path = f'{self.base_path}/results/{self.sample_dir}/fly{self.scan_number}/roi0_Ndp256/{self.recon_path}/O_phase_roi/O_phase_roi_Niter1000.tiff'
         obj = tifffile.imread(obj_path)
         obj = np.flipud(np.fliplr(obj))
         
@@ -1066,33 +1127,35 @@ phi_angles=get_sample_scans(scan_info, ' ZC4')['phi_angle'].values
 selected_scans=[{'scan':439,'angle':31.0,'shift_y':0,'shift_x':0}]
 #%%
 
-# dps=ptNN_U.load_h5_scan_to_npy(base_directory+'ptycho/', 439, plot=False, point_data=True)
-# plt.imshow(dps[0],norm=colors.LogNorm())
-# plt.colorbar()
-# plt.show()
+dps=ptNN_U.load_h5_scan_to_npy(base_directory+'ptycho/', 439, plot=False, point_data=True)
+plt.imshow(dps[0],norm=colors.LogNorm())
+plt.colorbar()
+plt.show()
+
 
 ncols=41#36
 nrows=31#29
 center=(718,742)
-# dps_size = dps[0].shape
+dps_size = dps[0].shape
+dpsize=256
 center_offset_y=dps_size[0]//2-center[0]
 center_offset_x=dps_size[1]//2-center[1]
-dpsize = 256
 
-# dps_cropped = dps[:, 
-#     dps_size[0]//2-center_offset_y - dpsize//2:dps_size[0]//2-center_offset_y + dpsize//2,
-#     dps_size[1]//2-center_offset_x - dpsize//2:dps_size[1]//2-center_offset_x + dpsize//2
-# ]
 
-# # Remove hot pixels
-# for i, dp in enumerate(dps_cropped):
-#     dp[dp >= 2**16-1] = np.min(dp)
+dps_cropped = dps[:, 
+    dps_size[0]//2-center_offset_y - dpsize//2:dps_size[0]//2-center_offset_y + dpsize//2,
+    dps_size[1]//2-center_offset_x - dpsize//2:dps_size[1]//2-center_offset_x + dpsize//2
+]
 
-# plt.imshow(dps_cropped[0],norm=colors.LogNorm())
-# plt.plot(128, 128, 'rx', markersize=10, markeredgewidth=2, label='Center (128,128)')
-# plt.legend()
-# plt.colorbar()
-# plt.show()
+# Remove hot pixels
+for i, dp in enumerate(dps_cropped):
+    dp[dp >= 2**16-1] = np.min(dp)
+
+plt.imshow(dps_cropped[0],norm=colors.LogNorm())
+plt.plot(128, 128, 'rx', markersize=10, markeredgewidth=2, label='Center (128,128)')
+plt.legend()
+plt.colorbar()
+plt.show()
 
 
 
@@ -1126,7 +1189,7 @@ analyzer = DiffractionAnalyzer(
         base_path=base_directory,
         sample_dir=sample_dir,
         recon_path=recon_path,
-        scan_number=418,
+        scan_number=439,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
@@ -1149,8 +1212,19 @@ analyzer.plot_scan_overlay(highlight_index=635,use_corrected_positions=False,use
 
 
 # %%
+print("Full scan view with highlighted position:")
+analyzer.plot_full_scan(
+    use_deconvolved=False,
+    shift_y=0,
+    shift_x=0,
+    scale_factor=1.25,
+    use_corrected_positions=False,
+    highlight_index=592+36*2,
+    show_local_fft=True
+)
+#%%
 # After initializing and loading data into analyzer
-sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.55, use_deconvolved=False,show_mask=True)
+sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.55, use_deconvolved=True,show_mask=True)
 
 
 #%%
@@ -1212,5 +1286,14 @@ loaded_indices = DiffractionAnalyzer.load_sample_indices('ZC4_sample_indices.h5'
 # Print some information about the loaded indices
 for scan_number, scan_indices in loaded_indices.items():
     print(f"Scan {scan_number}: {len(scan_indices)} sample patterns")
+
+# %%
+import h5py
+#%%
+raw='/net/micdata/data2/12IDC/2025_Feb/ptycho/439/ZC4_439_00021_00021.h5'
+ptychi_result='/net/micdata/data2/12IDC/2025_Feb/ptychi_recons/S0062/Ndp256_LSQML_c1000_m0.5_gaussian_p10_cp_mm_opr3_ic_pc_ul2/recon_Niter1000.h5'
+#%%
+with h5py.File(ptychi_result, 'r') as f:
+    print(f.keys())
 
 # %%

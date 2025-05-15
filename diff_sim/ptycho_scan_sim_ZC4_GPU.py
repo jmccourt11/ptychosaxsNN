@@ -15,6 +15,8 @@ import h5py
 import pdb
 import os
 from matplotlib.colors import LinearSegmentedColormap
+import tifffile
+#%%
 
 def hanning_gpu(image):
     # GPU version of hanning window
@@ -48,33 +50,30 @@ def load_and_prepare_data():
 
 def rotate_lattice_gpu(amplitude_3d, angles):
     """Rotate 3D lattice on GPU using CuPy's rotation function"""
-    # Convert angles to radians
-    angles_rad = [cp.deg2rad(angle) for angle in angles]
-    
-    # First rotation around z-axis (axes 1,2)
-    rotated = rotate_gpu(amplitude_3d, angle=angles_rad[0], axes=(1, 2), reshape=False)
-    
-    # Second rotation around y-axis (axes 0,2)
-    rotated = rotate_gpu(rotated, angle=angles_rad[1], axes=(0, 2), reshape=False)
-    
-    # Third rotation around x-axis (axes 0,1)
-    rotated = rotate_gpu(rotated, angle=angles_rad[2], axes=(0, 1), reshape=False)
-    
+    # Use angles directly in degrees like the CPU version
+    rotated = rotate_gpu(amplitude_3d, angle=angles[0], axes=(1, 2), reshape=False)
+    rotated = rotate_gpu(rotated, angle=angles[1], axes=(0, 2), reshape=False)
+    rotated = rotate_gpu(rotated, angle=angles[2], axes=(0, 1), reshape=False)
     return rotated
 
-def main():
+
+#%%
+# def main():
+# GPU device selection
+gpu_id = 1  # Change this to select different GPU (0, 1, 2, etc.)
+with cp.cuda.Device(gpu_id):
     # Initialize parameters
-    lattice_size = 400
+    lattice_size = 400#400
     grid_size = 1024
     lattice_spacing = 6
     radius = lattice_spacing/2
     dpsize = 256
-    nsteps = 3
-    nscans = 1200
-    plot = False
+    nsteps = 1
+    nscans = 1
+    plot = True
     total_plot = False
     total = False
-    save = True
+    save = False
     save_total = False
     noise_on = False
     resize_pbp = False
@@ -85,6 +84,7 @@ def main():
     if plot:
         plt.imshow(np.abs(cp.asnumpy(pb1)))
         plt.show()
+
     
     # Load pinhole and PSF
     pbp = cp.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_complex_256x256_bw0.75.npy')
@@ -92,15 +92,16 @@ def main():
     #psf_pinhole=cp.fft.fft2(pbp)
     
     # Load lattice and move to GPU
-    amplitude_3d = cp.array(np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy'))
-
+    #amplitude_3d = cp.array(np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy'))
+    amplitude_3d = cp.array(tifffile.imread('/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_/tomogram_alignment_recon_28nm.tiff'))
+    
     # Initialize count
     count = 1
 
     # Define scan pattern
     center_x = 512
     center_y = 512
-    center_concentration = 0.5
+    center_concentration = 0.1
     scan_range = int(lattice_size * center_concentration)
     start_x = center_x - scan_range // 2
     start_y = center_y - scan_range // 2
@@ -114,11 +115,17 @@ def main():
         total_intensity_conv = cp.zeros((dpsize, dpsize))
         
         # Random rotation angles
-        rotation_angles = [random.randint(0,90), random.randint(0,90), random.randint(0,90)]
+        #rotation_angles = [random.randint(0,90), random.randint(0,90), random.randint(0,90)]
+        #rotation_angles = [30,0,30]
+        rotation_angles = [0, 0, 0]#]random.randint(0,90)]
         
         # Rotate lattice on GPU using the new function
         amplitude_3d_rotated = rotate_lattice_gpu(amplitude_3d, rotation_angles)
-
+        plt.imshow(np.abs(cp.asnumpy(fftshift(fft2(cp.sum(amplitude_3d_rotated[:,:,:],axis=2))))),norm=colors.LogNorm(),cmap='jet')
+        plt.colorbar()
+        plt.show()
+        plt.imshow(np.abs(cp.asnumpy(cp.sum(amplitude_3d_rotated[:,:,:],axis=2))),cmap='gray')
+        plt.show()
         for k in range(nsteps):
             for i in range(nsteps):
                 # Project and process on GPU
@@ -151,18 +158,19 @@ def main():
                 # Extract illuminated region
                 ob_w_2 = particles_padded
                 ob_e_2 = ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw, 
-                              probe_center_y-p_hw:probe_center_y+p_hw] * \
-                         hanning_gpu(ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw,
-                                         probe_center_y-p_hw:probe_center_y+p_hw])
+                            probe_center_y-p_hw:probe_center_y+p_hw] * \
+                        hanning_gpu(ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw,
+                                        probe_center_y-p_hw:probe_center_y+p_hw])
                 if plot:
                     plt.imshow(np.abs(cp.asnumpy(ob_e_2)))
-                    plt.show()  
+                    plt.show() 
                     plt.imshow(np.abs(cp.asnumpy(ob_w_2)))
                     plt.show()
                 
                 # Calculate diffraction patterns on GPU
                 psi_k_2_ideal = fft2(ob_e_2 * pbp)
                 pinhole_DP = conv2(cp.abs(psi_k_2_ideal), cp.abs(psf_pinhole), 'same', boundary='symm')
+                #pinhole_DP = fftshift(fft2(ob_e_2))
                 psi_k_2 = fftshift(fft2(pb1 * ob_e_2))
 
                 # Calculate intensities
@@ -218,6 +226,11 @@ def main():
             plt.colorbar()
             plt.show()
 
+#%%
 if __name__ == "__main__":
     main() 
+# %%
+
+
+
 # %%

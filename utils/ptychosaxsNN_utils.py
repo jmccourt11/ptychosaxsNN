@@ -6,23 +6,23 @@ import torch
 from tqdm import tqdm
 import os
 import h5py
-import hdf5plugin
+#import hdf5plugin #THIS IMPORT CAUSES A HANGUP
 from scipy.ndimage import maximum_filter, label, find_objects
-import scipy.fft as spf
-import scipy.io as sio
+#import scipy.fft as spf
+#import scipy.io as sio
 from typing import List, Tuple
-import pyFAI
+#import pyFAI
 from pathlib import Path
 import re
 from sklearn.cluster import DBSCAN
 import plotly.graph_objects as go
-import webbrowser
+#import webbrowser
 import plotly.graph_objects as go
 from tqdm import tqdm
 from skimage.transform import downscale_local_mean
 from plotly.subplots import make_subplots
-import time
-import pdb
+#import time
+#import pdb
 from ipywidgets import interact, FloatSlider, Button, VBox, Output
 import ipywidgets as widgets
 import pandas as pd
@@ -46,7 +46,8 @@ def log10_custom(arr):
     result[positive_mask] = log10_positive
     
     # Set non-positive entries to the minimum log10 value
-    result[~positive_mask] = 0#min_log10_value
+    result[~positive_mask] = min_log10_value#hostname
+    
     
     return result
 
@@ -174,6 +175,103 @@ def preprocess_ZCB_9(dp,mask):
     sf=np.max(dp_pp)-np.min(dp_pp)
     bkg=np.min(dp_pp)
     dp_pp=np.asarray((dp_pp-bkg)/(sf))
+    dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
+    
+    return dp_pp,sf,bkg
+
+def create_circular_waxs_mask_min_value(image, radius):
+    """
+    Create a modified version of the image where the central region is set to the minimum value.
+    
+    Args:
+        image (ndarray): Input image to be masked
+        radius (int): Radius of the central circular region to modify
+        
+    Returns:
+        ndarray: Image with central circle set to minimum value
+    """
+    # Create a copy of the image
+    masked_image = image.copy()
+    
+    # Find minimum value in the image (excluding zeros or NaNs if needed)
+    valid_pixels = image[image > 0]  # Adjust if needed
+    if len(valid_pixels) > 0:
+        min_val = np.min(valid_pixels)
+    else:
+        min_val = 0
+    
+    # Create the circular mask
+    h, w = image.shape
+    y, x = np.indices((h, w))
+    center_y, center_x = h // 2, w // 2
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    
+    # Set central region to minimum value
+    central_region = (distance_from_center <= radius)
+    masked_image[central_region] = min_val
+    
+    return masked_image,central_region
+
+
+def bin_ndarray(ndarray, new_shape, operation='mean'):
+    """
+    Bins an ndarray to a new shape by averaging or summing.
+    """
+    shape = ndarray.shape
+    assert len(shape) == len(new_shape)
+    compression_pairs = [(d, c//d) for d, c in zip(new_shape, shape)]
+    flattened = [l for p in compression_pairs for l in p]
+    ndarray = ndarray.reshape(flattened)
+    for i in range(len(new_shape)):
+        op = getattr(ndarray, operation)
+        ndarray = op(-1*(i+1))
+    return ndarray
+
+def create_circular_mask_zero_outside(image, radius=128):
+    """
+    Creates a circular mask at the center of the image where values outside the circle are set to zero.
+    
+    Args:
+        image (ndarray): Input image to be masked
+        radius (int): Radius of the circle to keep (values outside will be set to zero)
+        
+    Returns:
+        ndarray: Image with values outside the circle set to zero
+    """
+    # Get the dimensions of the image
+    h, w = image.shape[:2]
+
+    # Center
+    center_x, center_y = w // 2, h // 2
+    
+    # Create a grid of x and y coordinates
+    y, x = np.ogrid[:h, :w]
+    
+    # Calculate the distance from each pixel to the center
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    
+    # Create the circular mask (True inside circle, False outside)
+    mask = distance_from_center <= radius
+    
+    # Create a copy of the image and set values outside circle to zero
+    masked_image = image.copy()
+    masked_image[~mask] = 0
+    
+    return masked_image
+
+def preprocess_CMT(dp,mask,radius=128):
+    bin_size=256
+    size=256
+    dp_pp=dp
+    dp_pp=np.asarray(dp_pp)
+    dp_pp=bin_ndarray(dp_pp, (bin_size, bin_size), operation='mean')
+    dp_pp=np.asarray(dp_pp*mask)
+    #dp_pp=np.asarray(resize(dp_pp,(size,size),preserve_range=True,anti_aliasing=True))
+    dp_pp=log10_custom(dp_pp)
+    sf=np.max(dp_pp)-np.min(dp_pp)
+    bkg=np.min(dp_pp)
+    dp_pp=np.asarray((dp_pp-bkg)/(sf))*mask
+    dp_pp=create_circular_mask_zero_outside(dp_pp,radius)
     dp_pp=torch.tensor(dp_pp.reshape(1,1,size,size))
     
     return dp_pp,sf,bkg
@@ -1699,8 +1797,8 @@ def apply_shift_to_grid(grid_image, y_shift, x_shift, grid_size_row, grid_size_c
     # Calculate new size needed for shifted image
     max_y_shift = abs(y_shift) * grid_size_row
     max_x_shift = abs(x_shift) * grid_size_col
-    new_height = grid_image.shape[0] + int(2 * max_shift_y)
-    new_width = grid_image.shape[1] + int(2 * max_shift_x)
+    new_height = grid_image.shape[0] + int(2 * max_y_shift)
+    new_width = grid_image.shape[1] + int(2 * max_x_shift)
     
     # Create new image with padding
     shifted_grid = np.zeros((new_height, new_width))
@@ -1722,8 +1820,8 @@ def apply_shift_to_grid(grid_image, y_shift, x_shift, grid_size_row, grid_size_c
             # Calculate source and target positions
             src_y = j * dp_size
             src_x = i * dp_size
-            tgt_y = src_y + cum_y_shift + int(max_shift_y)
-            tgt_x = src_x + cum_x_shift + int(max_shift_x)
+            tgt_y = src_y + cum_y_shift + int(max_y_shift)
+            tgt_x = src_x + cum_x_shift + int(max_x_shift)
             
             # Copy diffraction pattern to new position
             shifted_grid[
