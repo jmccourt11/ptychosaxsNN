@@ -16,7 +16,9 @@ from tqdm import tqdm
 from scipy.io import loadmat
 from scipy.spatial.transform import Rotation
 import colorsys
-
+from sklearn.cluster import DBSCAN
+import scipy.io as sio
+#%%
 def create_hsv_colorscale(n_colors=100):
     colors = []
     for i in range(n_colors + 1):  # +1 to include both endpoints
@@ -1911,7 +1913,7 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
         marker=dict(
             size=5,
             color=magnitude_filtered,
-            colorscale='Viridis',
+            colorscale='Jet',
             opacity=0.4,
             colorbar=dict(title='RS Magnitude')
         ),
@@ -1962,21 +1964,108 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
     
     vs = np.array(vs)
     
-    # Combine high-intensity points from both FFT and reciprocal space data
-    high_intensity_points = np.column_stack((
-        np.concatenate([kx_filtered, kx_fft_filtered]),
-        np.concatenate([ky_filtered, ky_fft_filtered]),
-        np.concatenate([kz_filtered, kz_fft_filtered])
-    ))
+    # Process reciprocal space data clusters
+    rs_points = np.column_stack((kx_filtered, ky_filtered, kz_filtered))
+    if len(rs_points) > 0:
+        # Normalize coordinates for clustering
+        rs_coords_normalized = rs_points / np.max(np.abs(rs_points))
+        
+        # Perform clustering for RS data
+        rs_clustering = DBSCAN(eps=0.1, min_samples=2).fit(rs_coords_normalized)
+        rs_labels = rs_clustering.labels_
+        
+        # Find centers of RS high-intensity regions
+        rs_region_centers = []
+        for label in set(rs_labels):
+            if label == -1:  # Skip noise points
+                continue
+            
+            # Get points in this cluster
+            mask = rs_labels == label
+            cluster_points = rs_points[mask]
+            cluster_magnitudes = magnitude_filtered[mask]
+            
+            # Calculate weighted center of mass
+            weights = cluster_magnitudes / np.sum(cluster_magnitudes)
+            center = np.sum(cluster_points * weights[:, np.newaxis], axis=0)
+            rs_region_centers.append(center)
+        
+        rs_region_centers = np.array(rs_region_centers)
+        
+        # Add RS region centers for visualization
+        fig.add_trace(go.Scatter3d(
+            x=rs_region_centers.T[0],
+            y=rs_region_centers.T[1],
+            z=rs_region_centers.T[2],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color='green',
+                opacity=0.6,
+                symbol='circle'
+            ),
+            name='RS Region Centers'
+        ))
     
-    # Find unit cell peaks that are close to high-intensity points
+    # Process FFT data clusters
+    fft_points = np.column_stack((kx_fft_filtered, ky_fft_filtered, kz_fft_filtered))
+    if len(fft_points) > 0:
+        # Normalize coordinates for clustering
+        fft_coords_normalized = fft_points / np.max(np.abs(fft_points))
+        
+        # Perform clustering for FFT data
+        fft_clustering = DBSCAN(eps=0.02, min_samples=3).fit(fft_coords_normalized)
+        fft_labels = fft_clustering.labels_
+        
+        # Find centers of FFT high-intensity regions
+        fft_region_centers = []
+        for label in set(fft_labels):
+            if label == -1:  # Skip noise points
+                continue
+            
+            # Get points in this cluster
+            mask = fft_labels == label
+            cluster_points = fft_points[mask]
+            cluster_magnitudes = magnitude_fft_filtered[mask]
+            
+            # Calculate weighted center of mass
+            weights = cluster_magnitudes / np.sum(cluster_magnitudes)
+            center = np.sum(cluster_points * weights[:, np.newaxis], axis=0)
+            fft_region_centers.append(center)
+        
+        fft_region_centers = np.array(fft_region_centers)
+        
+        # Add FFT region centers for visualization
+        fig.add_trace(go.Scatter3d(
+            x=fft_region_centers.T[0],
+            y=fft_region_centers.T[1],
+            z=fft_region_centers.T[2],
+            mode='markers',
+            marker=dict(
+                size=4,
+                color='blue',
+                opacity=0.5,
+                symbol='circle'
+            ),
+            name='FFT Region Centers'
+        ))
+    
+    # Combine all region centers
+    all_region_centers = []
+    if len(rs_points) > 0:
+        all_region_centers.extend(rs_region_centers)
+    if len(fft_points) > 0:
+        all_region_centers.extend(fft_region_centers)
+    all_region_centers = np.array(all_region_centers)
+    
+    # Find unit cell peaks that are close to region centers
     close_peaks = []
     close_peaks_hkl = []
-    used_regions = set()  # Keep track of which high-intensity regions have been matched
+    used_regions = set()
     
     for i, peak in enumerate(vs):
-        # Calculate distances to all high-intensity points
-        distances = np.sqrt(np.sum((high_intensity_points - peak)**2, axis=1))
+        # Calculate distances to all region centers
+        distances = np.sqrt(np.sum((all_region_centers - peak)**2, axis=1))
         min_dist_idx = np.argmin(distances)
         min_dist = distances[min_dist_idx]
         
@@ -1996,12 +2085,13 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
             z=close_peaks.T[2],
             mode='markers+text',
             marker=dict(
-                size=10,
+                size=5,
                 color='red',
-                opacity=0.8,
+                opacity=0.3,
                 symbol='diamond'
             ),
             text=close_peaks_hkl,
+            textfont=dict(size=6),
             textposition="top center",
             name='Unit Cell Peaks'
         ))
@@ -2013,10 +2103,7 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
             xaxis_title="Qx (Å⁻¹)",
             yaxis_title="Qy (Å⁻¹)",
             zaxis_title="Qz (Å⁻¹)",
-            aspectmode='cube',
-            # xaxis=dict(range=[-0.1, 0.1]),
-            # yaxis=dict(range=[-0.1, 0.1]),
-            # zaxis=dict(range=[-0.1, 0.1])
+            aspectmode='cube'
         ),
         width=1000,
         height=1000,
@@ -2024,6 +2111,12 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
     )
     
     return fig
+
+
+
+
+
+
 
 #%%
 # Load the data
@@ -2043,22 +2136,24 @@ elif axis == 'z':
     rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
 tomo_data = rotated_data
 
-# Create and display the plot
-fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.7)
-fig.show()
-
+# # Create and display the plot
+# fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.7)
+# fig.show()
 
 
 # Print dimensions
 print(f"Tomogram shape: {tomo_data.shape}")
 
+
+#%%
+
 #magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
-magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=56,scale=1)
+magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=28,scale=1)
 
 
 
 # Define a threshold for the magnitude
-threshold = 0.002* np.max(magnitude)  # Example: 10% of the max magnitude
+threshold = 0.00005* np.max(magnitude)  # Example: 10% of the max magnitude
 
 # Flatten the arrays
 kx_flat = KX.flatten()
@@ -2070,7 +2165,7 @@ magnitude_flat = magnitude.flatten()
 radial_distance = np.sqrt(kx_flat**2 + ky_flat**2 + kz_flat**2)
 
 # Apply both magnitude threshold and center cutoff
-mask = (magnitude_flat > threshold) & (radial_distance > 1e-2)
+mask = (magnitude_flat > threshold) & (radial_distance > 0.06)
 
 # Apply the threshold
 kx_filtered = kx_flat[mask]
@@ -2085,13 +2180,25 @@ fig_fft = go.Figure(data=go.Scatter3d(
     z=kz_filtered,
     mode='markers',
     marker=dict(
-        size=10,
+        size=4,
         color=magnitude_filtered,
         colorscale='Viridis',
         opacity=0.8,
         colorbar=dict(title='Magnitude')
     )
 ))
+
+
+
+fig_fft.show()
+
+
+
+
+
+
+
+#%%
 center_cutoff_radius=1e-2
 # Add a semi-transparent sphere to visualize the cutoff region (optional)
 u = np.linspace(0, 2 * np.pi, 20)
@@ -2123,7 +2230,8 @@ fig_fft.update_layout(
 # Run test
 # Load and plot cell info
 #cellinfo_data = load_cellinfo_data("/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/cellinfo.mat")
-cellinfo_data = load_cellinfo_data("cellinfo.mat")
+#cellinfo_data = load_cellinfo_data("cellinfo.mat")
+cellinfo_data = load_cellinfo_data("cellinfo_256_BL.mat")
 # hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
 # ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
 # ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
@@ -2211,9 +2319,12 @@ fig_fft.show()
 
 #%%
 import scipy.io as sio
-tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
-tomo_data_RS=tomo_data_RS_file['DATA']#.swapaxes(1,2)
-tomo_data_RS_qs=tomo_data_RS_file['Qv']
+#tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
+#tomo_data_RS_file=sio.loadmat('reciprocal_space_binned.mat')
+tomo_data_RS_file=sio.loadmat('/scratch/2025_Feb/temp/FFT_RS_128.mat')
+tomo_data_RS=tomo_data_RS_file['DATA_m']
+tomo_data_RS_qs=tomo_data_RS_file['Qv_m']
+    
 # nx, ny, nz = tomo_data_RS.shape
 # QX = tomo_data_RS_qs[:, 0].reshape(nx, ny, nz)
 # QY = tomo_data_RS_qs[:, 1].reshape(nx, ny, nz)
@@ -2221,11 +2332,12 @@ tomo_data_RS_qs=tomo_data_RS_file['Qv']
 
 tomo_data_RS[np.isnan(tomo_data_RS)]=0
 tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
-#%%
 center = np.array(tomo_data_RS.shape) // 2
-radius = 40  # Radius of sphere to mask
+radius = 70  # Radius of sphere to mask
 x, y, z = np.ogrid[:tomo_data_RS.shape[0], :tomo_data_RS.shape[1], :tomo_data_RS.shape[2]]
-mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
+
+mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 >= radius**2
+#mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
 
 # Apply mask to tomogram
 tomo_data_RS_masked = tomo_data_RS.copy()
@@ -2237,9 +2349,9 @@ tomo_data_RS_masked[mask] = 0
 
 
 magnitude = tomo_data_RS_masked
-KX,KY,KZ=tomo_data_RS_qs[:,0],tomo_data_RS_qs[:,1],tomo_data_RS_qs[:,2]
+KX,KY,KZ=-tomo_data_RS_qs[:,1],tomo_data_RS_qs[:,2],tomo_data_RS_qs[:,0]
 # Define a threshold for the magnitude
-threshold = 0.5* np.max(magnitude)  # Example: 10% of the max magnitude
+threshold = 0.0005* np.max(magnitude)  # Example: 10% of the max magnitude
 
 # Flatten the arrays
 kx_flat = KX.flatten()
@@ -2253,6 +2365,7 @@ kx_filtered = kx_flat[mask]
 ky_filtered = ky_flat[mask]
 kz_filtered = kz_flat[mask]
 magnitude_filtered = magnitude_flat[mask]
+
 # Create a 3D scatter plot of the FFT magnitude
 fig_fft = go.Figure(data=go.Scatter3d(
     x=kx_filtered,
@@ -2269,60 +2382,12 @@ fig_fft = go.Figure(data=go.Scatter3d(
 ))
 # Run test
 # Load and plot cell info
-cellinfo_data = load_cellinfo_data("cellinfo.mat")
+cellinfo_data = load_cellinfo_data("/scratch/2025_Feb/temp/cellinfo_256_BL_2.mat")
 hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
 ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
 ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
-# hs=np.array([4,4,0,0,-4,-4,0,0,4,-4,4,-4])
-# ks=np.array([4,-4,4,4,-4,4,-4,-4,0,0,0,0])
-# ls=np.array([0,0,4,-4,0,0,-4,4,0,4,-4,-4])
-vs=[]
-
-for i,h in enumerate(hs):
-    v=hs[i]*cellinfo_data['recilatticevectors'][0]+ks[i]*cellinfo_data['recilatticevectors'][1]+ls[i]*cellinfo_data['recilatticevectors'][2]
-    vs.append(v)
-
-vs=np.array(vs)
-# fig_fft.add_trace(go.Scatter3d(
-#     x=vs.T[0],
-#     y=vs.T[1],
-#     z=vs.T[2],
-#     mode='markers',
-#     marker=dict(size=10, color='red', opacity=0.8),
-#     name='Cell Info'
-# ))
 
 
-fig_fft.update_layout(
-    title="3D FFT Magnitude with Threshold",
-    scene=dict(
-        xaxis_title="KX",
-        yaxis_title="KY",
-        zaxis_title="KZ",
-        aspectmode='cube'
-    ),
-    width=800, height=800
-)
-
-# # Example: set the same range for all axes
-# qmin = -0.1  # set to your desired min
-# qmax = 0.1   # set to your desired max
-
-# fig_fft.update_layout(
-#     scene=dict(
-#         xaxis=dict(title='Qx', range=[qmin, qmax]),
-#         yaxis=dict(title='Qy', range=[qmin, qmax]),
-#         zaxis=dict(title='Qz', range=[qmin, qmax]),
-#         aspectmode='cube'
-#     )
-# )
-
-#%%
-tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
-tomo_data_RS=tomo_data_RS_file['DATA']#.swapaxes(1,2)
-tomo_data_RS_qs=tomo_data_RS_file['Qv']
-tomo_data_RS[np.isnan(tomo_data_RS)]=0
-tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
 
 # Generate Miller indices up to 3rd order
 def generate_miller_indices(max_order=3):
@@ -2341,14 +2406,389 @@ def generate_miller_indices(max_order=3):
     return np.array(indices)
 
 # Generate indices up to 3rd order
-miller_indices = generate_miller_indices(9)
+miller_indices = generate_miller_indices(1)
+hs = miller_indices[:, 0]
+ks = miller_indices[:, 1]
+ls = miller_indices[:, 2]
+# hs=np.array([4,4,0,0,-4,-4,0,0,4,-4,4,-4])
+# ks=np.array([4,-4,4,4,-4,4,-4,-4,0,0,0,0])
+# ls=np.array([0,0,4,-4,0,0,-4,4,0,4,-4,-4])
+vs=[]
+
+for i,h in enumerate(hs):
+    v=hs[i]*cellinfo_data['recilatticevectors'][0]+ks[i]*cellinfo_data['recilatticevectors'][1]+ls[i]*cellinfo_data['recilatticevectors'][2]
+    vs.append(v)
+
+vs=np.array(vs)
+
+
+fig_fft.add_trace(go.Scatter3d(
+    x=vs.T[0],
+    y=vs.T[1],
+    z=vs.T[2],
+    mode='markers',
+    marker=dict(size=10, color='red', opacity=0.8),
+    name='Cell Info'
+))
+
+
+fig_fft.update_layout(
+    title="3D FFT Magnitude with Threshold",
+    scene=dict(
+        xaxis_title="KX",
+        yaxis_title="KY",
+        zaxis_title="KZ",
+        aspectmode='cube'
+    ),
+    width=800, height=800
+)
+
+# # Example: set the same range for all axes
+# qmin = -0.05  # set to your desired min
+# qmax = 0.05   # set to your desired max
+
+# fig_fft.update_layout(
+#     scene=dict(
+#         xaxis=dict(title='Qx', range=[qmin, qmax]),
+#         yaxis=dict(title='Qy', range=[qmin, qmax]),
+#         zaxis=dict(title='Qz', range=[qmin, qmax]),
+#         aspectmode='cube'
+#     )
+# )
+fig_fft.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+#tomo_data_RS_file=sio.loadmat('ZCB_9_3D_deconvolved_RS.mat')
+tomo_data_RS_file=sio.loadmat('reciprocal_space_binned.mat')
+tomo_data_RS_file=sio.loadmat('/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/reciprocal_space_binned_fft_256_NEW_complex_object_roi_TEST.mat')
+
+tomo_data_RS=tomo_data_RS_file['DATA']#.swapaxes(1,2)
+tomo_data_RS_qs=tomo_data_RS_file['Qv']
+tomo_data_RS[np.isnan(tomo_data_RS)]=0
+tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
+
+#%%
+
+# Generate Miller indices up to 3rd order
+def generate_miller_indices(max_order=3):
+    """
+    Generate Miller indices (h,k,l) up to specified order.
+    Excludes (0,0,0) and includes all combinations where |h|,|k|,|l| ≤ max_order.
+    """
+    indices = []
+    for h in range(-max_order, max_order + 1):
+        for k in range(-max_order, max_order + 1):
+            for l in range(-max_order, max_order + 1):
+                # Skip the origin
+                if h == 0 and k == 0 and l == 0:
+                    continue
+                indices.append([h, k, l])
+    return np.array(indices)
+
+# Generate indices up to 3rd order
+miller_indices = generate_miller_indices(8)
 hs = miller_indices[:, 0]
 ks = miller_indices[:, 1]
 ls = miller_indices[:, 2]
 
 # Create the combined plot
-fig = plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cellinfo_data, hs, ks, ls, threshold_D=0.35,threshold_tomo_FFT=0.002, q_cutoff=0.07, peak_distance_threshold=0.0012)
+fig = plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, 
+                                     cellinfo_data, hs, ks, ls, threshold_D=0.05,
+                                     threshold_tomo_FFT=0.005, q_cutoff=0.065, 
+                                     peak_distance_threshold=0.008)
 fig.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+def generate_miller_indices(max_order=3):
+    """
+    Generate Miller indices (h,k,l) up to specified order.
+    Excludes (0,0,0) and includes all combinations where |h|,|k|,|l| ≤ max_order.
+    """
+    indices = []
+    for h in range(-max_order, max_order + 1):
+        for k in range(-max_order, max_order + 1):
+            for l in range(-max_order, max_order + 1):
+                # Skip the origin
+                if h == 0 and k == 0 and l == 0:
+                    continue
+                indices.append([h, k, l])
+    return np.array(indices)
+
+def plot_multi_reciprocal_space(
+    rs_datasets,  # List of dicts: [{'magnitude': 3D array, 'Q': 4D array (shape: (nx,ny,nz,3)), 'label': str}, ...]
+    cellinfo_data,
+    hs, ks, ls,
+    thresholds,  # List of thresholds for each dataset
+    q_cutoffs,
+    peak_distance_threshold=0.01,
+    colormaps=['Viridis', 'Jet', 'Plasma'],
+    alphas=[0.4, 0.4, 0.4]
+):
+    """
+    Plot multiple 3D reciprocal space datasets and unit cell peaks.
+    Args:
+        rs_datasets: List of dicts, each with keys:
+            - 'magnitude': 3D numpy array
+            - 'Q': 4D numpy array (shape: (nx,ny,nz,3)), or tuple of (Qx, Qy, Qz) 3D arrays
+            - 'label': str, label for the dataset
+        cellinfo_data: Unit cell information
+        hs, ks, ls: Miller indices for unit cell peaks
+        thresholds: List of magnitude thresholds for each dataset (relative, 0-1)
+        q_cutoff: Minimum |q| to include (float)
+        peak_distance_threshold: Max distance to consider a unit cell peak as close to a region center
+    """
+    import numpy as np
+    import plotly.graph_objects as go
+    from sklearn.cluster import DBSCAN
+
+    fig = go.Figure()
+    all_region_centers = []
+    all_labels = []
+
+    # Plot each reciprocal space dataset
+    for idx, dataset in enumerate(rs_datasets):
+        magnitude = dataset['DATA']
+        Q = dataset['Qv']
+        label = dataset.get('label', f'Dataset {idx+1}')
+        threshold = thresholds[idx]
+
+        # Support both Q as 4D array or tuple of 3D arrays
+        if isinstance(Q, tuple) or isinstance(Q, list):
+            Qx, Qy, Qz = Q
+        else:
+            Qx, Qy, Qz = Q[...,0], Q[...,1], Q[...,2]
+
+        # Flatten
+        qx_flat = Qx.flatten()
+        qy_flat = Qy.flatten()
+        qz_flat = Qz.flatten()
+        mag_flat = magnitude.flatten()
+
+        # Calculate |q|
+        q_mag = np.sqrt(qx_flat**2 + qy_flat**2 + qz_flat**2)
+
+        # Apply q_cutoff and magnitude threshold
+        mask = (q_mag > q_cutoffs[idx]) & (mag_flat > threshold * np.max(mag_flat))
+        qx_f = qx_flat[mask]
+        qy_f = qy_flat[mask]
+        qz_f = qz_flat[mask]
+        mag_f = mag_flat[mask]
+
+        # Plot
+        fig.add_trace(go.Scatter3d(
+            x=qx_f, y=qy_f, z=qz_f,
+            mode='markers',
+            marker=dict(
+                size=5,
+                color=mag_f,
+                colorscale=colormaps[idx],
+                opacity=alphas[idx],
+                colorbar=dict(title=f'{label} Magnitude') if idx == 0 else None
+            ),
+            name=label
+        ))
+
+        # Cluster and find region centers
+        if len(qx_f) > 0:
+            coords = np.column_stack((qx_f, qy_f, qz_f))
+            coords_norm = coords / np.max(np.abs(coords))
+            clustering = DBSCAN(eps=0.08, min_samples=10).fit(coords_norm)
+            labels = clustering.labels_
+            region_centers = []
+            for clabel in set(labels):
+                if clabel == -1:
+                    continue
+                mask_c = labels == clabel
+                cluster_points = coords[mask_c]
+                cluster_mags = mag_f[mask_c]
+                weights = cluster_mags / np.sum(cluster_mags)
+                center = np.sum(cluster_points * weights[:, np.newaxis], axis=0)
+                region_centers.append(center)
+            region_centers = np.array(region_centers)
+            if len(region_centers) > 0:
+                fig.add_trace(go.Scatter3d(
+                    x=region_centers[:,0], y=region_centers[:,1], z=region_centers[:,2],
+                    mode='markers',
+                    marker=dict(size=8, color='green', opacity=0.6, symbol='circle'),
+                    name=f'{label} Region Centers'
+                ))
+                all_region_centers.extend(region_centers)
+                all_labels.extend([label]*len(region_centers))
+
+    # Compute unit cell peaks
+    vs = []
+    hkl_list = []
+    for i, h in enumerate(hs):
+        v = hs[i]*cellinfo_data['recilatticevectors'][0] + \
+            ks[i]*cellinfo_data['recilatticevectors'][1] + \
+            ls[i]*cellinfo_data['recilatticevectors'][2]
+        vs.append(v)
+        hkl_list.append(f"({h},{ks[i]},{ls[i]})")
+    vs = np.array(vs)
+
+    # Find unit cell peaks close to any region center
+    close_peaks = []
+    close_peaks_hkl = []
+    used_regions = set()
+    all_region_centers = np.array(all_region_centers)
+    for i, peak in enumerate(vs):
+        if len(all_region_centers) == 0:
+            break
+        distances = np.sqrt(np.sum((all_region_centers - peak)**2, axis=1))
+        min_dist_idx = np.argmin(distances)
+        min_dist = distances[min_dist_idx]
+        if min_dist < peak_distance_threshold and (min_dist_idx, all_labels[min_dist_idx]) not in used_regions:
+            close_peaks.append(peak)
+            close_peaks_hkl.append(hkl_list[i])
+            used_regions.add((min_dist_idx, all_labels[min_dist_idx]))
+    close_peaks = np.array(close_peaks)
+
+    if len(close_peaks) > 0:
+        fig.add_trace(go.Scatter3d(
+            x=close_peaks[:,0], y=close_peaks[:,1], z=close_peaks[:,2],
+            mode='markers+text',
+            marker=dict(size=5, color='red', opacity=0.3, symbol='diamond'),
+            text=close_peaks_hkl,
+            textfont=dict(size=6),
+            textposition="top center",
+            name='Unit Cell Peaks'
+        ))
+
+    fig.update_layout(
+        title="Multi Reciprocal Space Visualization",
+        scene=dict(
+            xaxis_title="Qx (Å⁻¹)",
+            yaxis_title="Qy (Å⁻¹)",
+            zaxis_title="Qz (Å⁻¹)",
+            aspectmode='cube'
+        ),
+        width=1000,
+        height=1000,
+        showlegend=True
+    )
+    return fig
+
+
+from scipy.ndimage import gaussian_filter
+
+
+basedir='/scratch/2025_Feb/temp/'
+
+tomo_data_RS_file=sio.loadmat(f'{basedir}/FFT_RS_128.mat')
+tomo_data_RS=tomo_data_RS_file['DATA_m']
+tomo_data_RS_qs=tomo_data_RS_file['Qv_m']
+tomo_data_RS[np.isnan(tomo_data_RS)]=0
+tomo_data_RS_qs[np.isnan(tomo_data_RS_qs)]=0
+tomo_data_RS = gaussian_filter(tomo_data_RS, sigma=0) 
+
+tomo_data_RS_file_256=sio.loadmat(f'{basedir}/FFT_RS_256.mat')
+tomo_data_RS_256=tomo_data_RS_file_256['DATA']
+tomo_data_RS_qs_256=tomo_data_RS_file_256['Qv']
+tomo_data_RS_256[np.isnan(tomo_data_RS_256)]=0
+tomo_data_RS_qs_256[np.isnan(tomo_data_RS_qs_256)]=0
+tomo_data_RS_256 = gaussian_filter(tomo_data_RS_256, sigma=1) 
+
+tomo_data_RS_file_DECONV=sio.loadmat(f'{basedir}/DECONV_RS_256.mat')
+tomo_data_RS_DECONV=tomo_data_RS_file_DECONV['DATA_m']
+tomo_data_RS_qs_DECONV=tomo_data_RS_file_DECONV['Qv_m']
+tomo_data_RS_DECONV[np.isnan(tomo_data_RS_DECONV)]=0
+tomo_data_RS_qs_DECONV[np.isnan(tomo_data_RS_qs_DECONV)]=0
+tomo_data_RS_DECONV = gaussian_filter(tomo_data_RS_DECONV, sigma=1) 
+
+
+cellinfo_data = load_cellinfo_data(f'{basedir}/cellinfo_256_BL.mat')
+
+
+rs_datasets=[
+    {'DATA':tomo_data_RS, 'Qv':tomo_data_RS_qs, 'label':'RS 128'},
+    {'DATA':tomo_data_RS_256, 'Qv':tomo_data_RS_qs_256, 'label':'RS 256'},
+    {'DATA':tomo_data_RS_DECONV, 'Qv':tomo_data_RS_qs_DECONV, 'label':'RS 256 DECONV'}
+]
+
+
+rs_datasets=[
+    {'DATA':tomo_data_RS, 'Qv':tomo_data_RS_qs, 'label':'RS 128'}
+]
+
+# Generate indices up to 3rd order
+miller_indices = generate_miller_indices(8)
+hs = miller_indices[:, 0]
+ks = miller_indices[:, 1]
+ls = miller_indices[:, 2]
+plot_multi_reciprocal_space(
+    rs_datasets,  # List of dicts: [{'magnitude': 3D array, 'Q': 4D array (shape: (nx,ny,nz,3)), 'label': str}, ...]
+    cellinfo_data,
+    hs, ks, ls,
+    #thresholds=[0.00016, 0.0001, 0.0115],  # List of thresholds for each dataset
+    thresholds=[0.0002],#, 0.00012, 0.0135],  # List of thresholds for each dataset
+    q_cutoffs=[0.02],#, 0.07, 0.07],
+    peak_distance_threshold=0.01,
+    colormaps=['inferno'],#, 'viridis', 'jet'],
+    alphas=[0.1]#, 0.3, 1.0]
+)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

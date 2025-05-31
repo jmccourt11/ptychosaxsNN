@@ -44,6 +44,7 @@ class DiffractionAnalyzer:
         self.model = None
         self.deconvolved_patterns = None
         self.positions = None
+        self.preprocessed_patterns = None
         
         # Set plotting defaults
         plt.rcParams['image.cmap'] = 'jet'
@@ -90,7 +91,7 @@ class DiffractionAnalyzer:
         
         # Initialize list to store deconvolved patterns
         self.deconvolved_patterns = []
-        
+        self.preprocessed_patterns = []
         # Process each diffraction pattern
         for dp in self.dps:
             # Preprocess individual pattern
@@ -100,9 +101,10 @@ class DiffractionAnalyzer:
             # Perform deconvolution
             deconvolved = self.model.model(resultTa).detach().to("cpu").numpy()[0][0]
             self.deconvolved_patterns.append(deconvolved)
-        
+            self.preprocessed_patterns.append(resultT[0][0])
         # Convert to numpy array for easier handling
         self.deconvolved_patterns = np.array(self.deconvolved_patterns)
+        self.preprocessed_patterns = np.array(self.preprocessed_patterns)
         return self
 
     def load_positions(self):
@@ -142,6 +144,7 @@ class DiffractionAnalyzer:
         self.positions -= np.mean(self.positions, axis=0)
         # Flip y-coordinates (positions[:, 1]) to match correct scan direction
         self.positions[:, 1] = -self.positions[:, 1]
+        self.positions[:, 2] = -self.positions[:, 2]
         return self
 
     def load_probe(self, probe_array):
@@ -669,7 +672,7 @@ class DiffractionAnalyzer:
         
         return radius_pixels
         
-    def plot_scan_overlay(self, use_deconvolved=False, shift_y=0, shift_x=0, scale_factor=2.0, use_corrected_positions=False, highlight_index=None, show_probe_size=True, save_path=None):
+    def plot_scan_overlay(self, use_deconvolved=False, shift_y=0, shift_x=0, scale_factor=2.0, use_corrected_positions=False, highlight_indices=None, show_probe_size=True, save_path=None):
         """
         Plot full scan of either original or deconvolved patterns using actual position data.
         Places each diffraction pattern at its corresponding position in the grid.
@@ -680,7 +683,7 @@ class DiffractionAnalyzer:
             shift_x (float): Horizontal shift in projection pixels (28nm/pixel)
             scale_factor (float): Factor to scale the size of displayed patterns (default: 2.0)
             use_corrected_positions (bool): Whether to use corrected positions from ptychography reconstruction
-            highlight_index (int, optional): Index of the pattern to highlight
+            highlight_indices (list[int] or int, optional): Indices of the patterns to highlight. If int, will be converted to list.
             show_probe_size (bool): Whether to show the probe size as a dashed circle
         """
         if self.positions is None:
@@ -707,15 +710,28 @@ class DiffractionAnalyzer:
         else:
             shifted_positions_calc = shifted_positions_exp.copy()
         
-        # Create figure with three subplots side by side
+        # Handle highlight_indices: allow int or list
+        if highlight_indices is not None:
+            if isinstance(highlight_indices, int):
+                highlight_indices = [highlight_indices]
+            elif not isinstance(highlight_indices, (list, tuple, np.ndarray)):
+                highlight_indices = list(highlight_indices)
+        else:
+            highlight_indices = []
+        
+        # Create figure with one subplot
         fig, ax1 = plt.subplots(1, 1, figsize=(15, 15))
         
         # Load and process the reconstructed object
         obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
         obj = sio.loadmat(obj_path)["object_roi"]
+        # obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff"
+        # obj = tifffile.imread(obj_path)
         
         # Only flip horizontally to match coordinate system
-        obj = np.flipud(np.fliplr(obj))
+        #obj = np.flipud(np.fliplr(obj))
+        obj = np.flipud(obj)
+        
         
         # Calculate object extent using UNSHIFTED positions for proper centering
         obj_extent = [
@@ -727,9 +743,14 @@ class DiffractionAnalyzer:
         
         # Plot the object
         ax1.imshow(np.angle(obj), extent=obj_extent, cmap='gray', alpha=0.8, origin='lower')
+        #ax1.imshow(obj, extent=obj_extent, cmap='gray', alpha=0.8, origin='lower')
         
         # Plot diffraction patterns at experimental positions
         pattern_size = data_to_plot[0].shape[0] * scale_factor
+        
+        # Track if we've added the legend label for probe and for highlight
+        probe_label_added = False
+        highlight_label_added = False
         
         for idx, pos in enumerate(shifted_positions_exp):
             if idx >= len(data_to_plot):
@@ -746,32 +767,29 @@ class DiffractionAnalyzer:
                 ax1.imshow(data_to_plot[idx], extent=pattern_extent)
             else:
                 ax1.imshow(data_to_plot[idx], extent=pattern_extent, norm=colors.LogNorm())
-                
-            # Highlight the selected pattern if specified
-            if highlight_index is not None and idx == highlight_index:
+            
+            # Highlight the selected patterns if specified
+            if idx in highlight_indices:
+                label = f'Selected Pattern' if not highlight_label_added else None
                 rect = plt.Rectangle((pattern_extent[0], pattern_extent[2]), 
                                    pattern_size, pattern_size,
                                    fill=False, color='red', linewidth=2,
-                                   label=f'Selected Pattern (Index: {idx})')
+                                   label=label)
                 ax1.add_patch(rect)
-                # Add text annotation
-                #ax1.text(pos[2], pos[1] + pattern_size/1.5, f'Index: {idx}', 
-                #        color='red', fontsize=14, ha='center', va='bottom')
-                
+                if not highlight_label_added:
+                    highlight_label_added = True
                 # Add probe size circle if requested
                 if show_probe_size and hasattr(self, 'probe'):
                     probe_radius_px = self.calculate_probe_radius()
-                    # Convert probe radius from pixels to nm
                     probe_radius_nm = probe_radius_px * 28  # 28 nm/pixel
                     probe_radius_um = probe_radius_nm / 1000
+                    probe_label = f'Probe Radius ({probe_radius_um:.1f} µm)' if not probe_label_added else None
                     circle = plt.Circle((pos[2], pos[1]), probe_radius_nm,
                                      fill=False, linestyle='--', color='#fcd83f', linewidth=4,
-                                     label=f'Probe Radius ({probe_radius_um:.1f} µm)')
+                                     label=probe_label)
                     ax1.add_patch(circle)
-                    # Add text annotation for probe size
-                    # ax1.text(pos[2], pos[1] + 3*pattern_size, 
-                    #         f'Probe radius: {probe_radius_um:.1f} um',
-                    #         color='#fcd83f', fontsize=16, ha='center', va='top')
+                    if not probe_label_added:
+                        probe_label_added = True
         
         ax1.set_title(f'Full Scan - {("Deconvolved" if use_deconvolved else "Original")}\n', fontsize=24)
         ax1.axis('equal')
@@ -781,8 +799,10 @@ class DiffractionAnalyzer:
         # Increase tick label sizes
         ax1.tick_params(axis='both', which='major', labelsize=18)
         
-        # Add legend with larger font size
-        ax1.legend(fontsize=16, loc='upper right', bbox_to_anchor=(1.0, 1.0))
+        # Add legend with larger font size, only if any highlights or probe shown
+        handles, labels = ax1.get_legend_handles_labels()
+        if handles:
+            ax1.legend(fontsize=16, loc='upper right', bbox_to_anchor=(1.0, 1.0))
         
         plt.tight_layout()
         if save_path is not None:
@@ -1066,8 +1086,8 @@ model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/ZCB_9_3D/best_mode
 #%%
 obj=tifffile.imread(f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{selected_scans[0]['scan']}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff")
 obj=tifffile.imread(f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff")
-
-plt.imshow(obj,cmap='gray')
+obj=tifffile.imread(f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5102/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/O_phase_roi/O_phase_roi_Niter1000.tiff")
+plt.imshow(np.fliplr(obj),cmap='gray')
 plt.show()
 
 #%%
@@ -1081,18 +1101,52 @@ plt.plot(-probe_positions[:,0],probe_positions[:,1],'o')
 plt.show()
 
 #%%
+#ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/Niter1000.mat")
 ob=sio.loadmat("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat")
 pb=ob['probe']
 # Only first mode
 pb1=pb[:,:,0,0]
 
 fig,ax=plt.subplots(1,1,figsize=(5,5))
-ax.imshow(obj,cmap='gray')
-ax.axis('off')
-# ax.imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1))),cmap='jet',norm=colors.LogNorm())
+# ax.imshow(obj,cmap='gray')
 # ax.axis('off')
+ax.imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1))),cmap='jet',norm=colors.LogNorm())
+ax.axis('off')
 plt.show()
+#%%
+import h5py
+with h5py.File("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/data_roi0_Ndp256_dp.hdf5",'r') as f:
+    index = 666
+    full_img = f['dp'][()][index]
+    zoom_img = full_img[128-64:128+64, 128-64:128+64]
 
+    # Overlay the zoomed-in image, centered
+    # The zoomed region covers x: 64 to 192, y: 64 to 192
+    plt.imshow(
+        zoom_img,
+        cmap='jet',
+        norm=colors.LogNorm(),
+        extent=[128-64, 128+64, 128+64, 128-64],  # [xmin, xmax, ymax, ymin]
+        alpha=1.0
+    )
+    
+    # Plot the full image
+    plt.imshow(full_img, norm=colors.LogNorm(), alpha=0.3,cmap='jet')
+
+    plt.show()
+#%%)
+# pb=ob['probe']
+# # Only first mode
+# pb1=pb[:,:,0]#,0]
+
+# fig,ax=plt.subplots(1,2,figsize=(10,5))
+# # ax.imshow(obj,cmap='gray')
+# # ax.axis('off')
+# ax[0].imshow(np.abs(pb1),cmap='jet')
+# ax[1].imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1))),cmap='jet',norm=colors.LogNorm())
+# ax[0].axis('off')
+# ax[1].axis('off')
+# plt.show()
 #%%
 
 # #%%
@@ -1142,7 +1196,7 @@ plt.show()
 
 analyzer = DiffractionAnalyzer(
         base_path='/net/micdata/data2/12IDC/2025_Feb/ptycho/',
-        scan_number=5065,
+        scan_number=5065,#5102,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
@@ -1162,21 +1216,33 @@ analyzer.perform_deconvolution()
 # Load probe
 analyzer.load_probe(pb1)
 # analyzer.calculate_probe_radius(show_fit=True)
-analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=False,scale_factor=2,show_probe_size=True,save_path=f"ZCB_9_3D_scan_overlay_original_{analyzer.scan_number}.pdf")
-analyzer.plot_scan_overlay(highlight_index=664,use_corrected_positions=False,use_deconvolved=True,scale_factor=2,show_probe_size=False,save_path=f"ZCB_9_3D_scan_overlay_deconvolved_{analyzer.scan_number}.pdf")
+analyzer.plot_scan_overlay(highlight_indices=[664,483,770],use_corrected_positions=False,use_deconvolved=False,scale_factor=2,show_probe_size=True,save_path=f"ZCB_9_3D_scan_overlay_original_{analyzer.scan_number}.pdf")
+analyzer.plot_scan_overlay(highlight_indices=[664,483,770],use_corrected_positions=False,use_deconvolved=True,scale_factor=2,show_probe_size=False,save_path=f"ZCB_9_3D_scan_overlay_deconvolved_{analyzer.scan_number}.pdf")
 
 #%%
-fig,ax=plt.subplots(1,1,figsize=(5,5))
-#ax.imshow(analyzer.dps[665],norm=colors.LogNorm())
-ax.imshow(analyzer.deconvolved_patterns[665])
-ax.axis('off')
-pattern_size=255
-rect = plt.Rectangle((0, 0), 
-                    pattern_size, pattern_size,
-                    fill=False, color='red', linewidth=6,
-                    label=f'Selected Pattern (Index: {664})')
-ax.add_patch(rect)
-plt.show()
+for i in [664,483,769]:
+    fig,ax=plt.subplots(1,1,figsize=(5,5))
+    #ax.imshow(analyzer.dps[665],norm=colors.LogNorm())
+    ax.imshow(analyzer.deconvolved_patterns[i])
+    ax.axis('off')
+    pattern_size=255
+    rect = plt.Rectangle((0, 0), 
+                        pattern_size, pattern_size,
+                        fill=False, color='red', linewidth=6,
+                        label=f'Selected Pattern (Index: {i})')
+    ax.add_patch(rect)
+    plt.show()
+    fig,ax=plt.subplots(1,1,figsize=(5,5))
+    #ax.imshow(analyzer.dps[665],norm=colors.LogNorm())
+    ax.imshow(analyzer.preprocessed_patterns[i])
+    ax.axis('off')
+    pattern_size=255
+    rect = plt.Rectangle((0, 0), 
+                        pattern_size, pattern_size,
+                        fill=False, color='red', linewidth=6,
+                        label=f'Selected Pattern (Index: {i})')
+    ax.add_patch(rect)
+    plt.show()
 
 
 # %%

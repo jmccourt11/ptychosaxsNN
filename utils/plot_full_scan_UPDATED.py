@@ -1194,8 +1194,29 @@ model_path = Path('/net/micdata/data2/12IDC/ptychosaxs/models/ZCB_9_3D/best_mode
 
 recon_path='MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/'
 
+
+# # Load the image
+# from sklearn.cluster import KMeans
+# from matplotlib.colors import LinearSegmentedColormap
+# from PIL import Image
+# img = Image.open('color_scheme_tomo.png')
+# img = img.convert('RGB')
+# img_np = np.array(img)
+# pixels = img_np.reshape(-1, 3)
+
+# # Cluster to find dominant colors
+# n_colors = 5  # You can change this number
+# kmeans = KMeans(n_clusters=n_colors, random_state=0).fit(pixels)
+# colors = kmeans.cluster_centers_ / 255  # Normalize to [0, 1] for matplotlib
+
+# # Create a custom colormap
+# custom_cmap = LinearSegmentedColormap.from_list('custom_cmap', colors)
+
+
 obj=tifffile.imread(f"{base_directory}/results/{sample_dir}/fly{selected_scans[0]['scan']}/roi0_Ndp256/{recon_path}/O_phase_roi/O_phase_roi_Niter1000.tiff")
+plt.figure(figsize=(20,20))
 plt.imshow(obj,cmap='gray')
+plt.axis('off')
 plt.show()
 
 obj_path = f"{base_directory}/results/{sample_dir}/fly{selected_scans[0]['scan']}/roi0_Ndp256/{recon_path}/Niter1000.mat"
@@ -1211,8 +1232,12 @@ ob=sio.loadmat(f"{base_directory}/results/{sample_dir}/fly{selected_scans[0]['sc
 pb=ob['probe']
 # Only first mode
 pb1=pb[:,:,0,0]
-plt.imshow(np.abs(pb1),cmap='gray')
+#plt.imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1))),cmap='jet',norm=colors.LogNorm())
+plt.figure(figsize=(10,10))
+plt.imshow(np.abs(pb1),cmap='Reds')
+plt.axis('off')
 plt.show()
+
 # %%
 
 analyzer = DiffractionAnalyzer(

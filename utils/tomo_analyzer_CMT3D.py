@@ -1878,8 +1878,9 @@ elif axis == 'z':
     rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
 tomo_data = rotated_data
 
+#%%
 # Create and display the plot
-fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.3)
+fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.5)
 fig.show()
 
 #%%
