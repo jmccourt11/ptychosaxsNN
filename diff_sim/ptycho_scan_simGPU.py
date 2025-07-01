@@ -68,15 +68,24 @@ def main():
     gpu_id = 2  # Change this to select different GPU (0, 1, 2, etc.)
     with cp.cuda.Device(gpu_id):
         # Initialize parameters
-        lattice_size = 400
+        # lattice_size = 400
+        # grid_size = 1024
+        # lattice_spacing = 6
+        # radius = lattice_spacing/2
+        # lattice_type = 'SC'
+        # center_concentration = 0.5
+        lattice_size = 480
         grid_size = 1024
-        lattice_spacing = 6
+        lattice_spacing = 12
         radius = lattice_spacing/2
+        lattice_type = 'FCC'
+        center_concentration = 0.6
+        
         dpsize = 256
         nsteps = 3
         nscans = 1
         plot = True
-        total_plot = False
+        total_plot = True
         total = False
         save = False
         save_total = False
@@ -96,7 +105,7 @@ def main():
         #psf_pinhole=cp.fft.fft2(pbp)
         
         # Load lattice and move to GPU
-        amplitude_3d = cp.array(np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC.npy'))
+        amplitude_3d = cp.array(np.load(f'lattices/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_type{lattice_type}.npy'))
 
         # Initialize count
         count = 1
@@ -104,7 +113,7 @@ def main():
         # Define scan pattern
         center_x = 512
         center_y = 512
-        center_concentration = 0.5
+        center_concentration = center_concentration
         scan_range = int(lattice_size * center_concentration)
         start_x = center_x - scan_range // 2
         start_y = center_y - scan_range // 2
@@ -114,8 +123,8 @@ def main():
         # Main simulation loop
         for l in tqdm(range(nscans)):
             # Initialize arrays
-            total_intensity = cp.zeros((dpsize, dpsize))
-            total_intensity_conv = cp.zeros((dpsize, dpsize))
+            total_intensity = np.zeros((dpsize, dpsize))
+            total_intensity_conv = np.zeros((dpsize, dpsize))
             
             # Random rotation angles
             rotation_angles = [random.randint(0,90), random.randint(0,90), random.randint(0,90)]
@@ -158,11 +167,11 @@ def main():
                                   probe_center_y-p_hw:probe_center_y+p_hw] * \
                              hanning_gpu(ob_w_2[probe_center_x-p_hw:probe_center_x+p_hw,
                                              probe_center_y-p_hw:probe_center_y+p_hw])
-                    if plot:
-                        plt.imshow(np.abs(cp.asnumpy(ob_e_2)))
-                        plt.show()  
-                        plt.imshow(np.abs(cp.asnumpy(ob_w_2)))
-                        plt.show()
+                    # if plot:
+                    #     plt.imshow(np.abs(cp.asnumpy(ob_e_2)))
+                    #     plt.show()  
+                    #     plt.imshow(np.abs(cp.asnumpy(ob_w_2)))
+                    #     plt.show()
                     
                     # Calculate diffraction patterns on GPU
                     psi_k_2_ideal = fft2(ob_e_2 * pbp)
@@ -175,10 +184,12 @@ def main():
                     pinhole_DP = cp.abs(psi_k_2_ideal)**2
 
                     # Resize and accumulate total intensities
-                    if total:
-                        total_intensity += cp.array(resize(cp.asnumpy(pinhole_DP), (256,256), preserve_range=True, anti_aliasing=True))
-                        total_intensity_conv += cp.array(resize(cp.asnumpy(conv_DP), (256,256), preserve_range=True, anti_aliasing=True))
-
+                    # if total:
+                    #     total_intensity += cp.array(resize(cp.asnumpy(pinhole_DP), (256,256), preserve_range=True, anti_aliasing=True))
+                    #     total_intensity_conv += cp.array(resize(cp.asnumpy(conv_DP), (256,256), preserve_range=True, anti_aliasing=True))
+                    if total_plot:
+                        total_intensity += cp.asnumpy(pinhole_DP_extra_conv)
+                        total_intensity_conv += cp.asnumpy(conv_DP)
                     # # Save results if enabled
                     # if save:
                     #     if not os.path.exists(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/lattice_ls{lattice_size}_gs{grid_size}_lsp{lattice_spacing}_r{radius}_typeSC'):
@@ -196,8 +207,8 @@ def main():
                         ax[0][0].imshow(np.abs(cp.asnumpy(pinhole_DP)),norm=colors.LogNorm(),cmap='jet')
                         ax[0][1].imshow(np.abs(cp.asnumpy(pinhole_DP_extra_conv)),norm=colors.LogNorm(),cmap='jet')
                         ax[1][0].imshow(np.abs(cp.asnumpy(conv_DP)),norm=colors.LogNorm(),cmap='jet')
-                        ax[1][1].imshow(np.abs(cp.asnumpy(ob_e_2)),cmap='gray')
-                        ax[1][1].imshow(np.abs(cp.asnumpy(pb1)),cmap='gray',alpha=0.2)
+                        #ax[1][1].imshow(np.abs(cp.asnumpy(ob_e_2)),cmap='gray')
+                        ax[1][1].imshow(np.abs(cp.asnumpy(pb1)),cmap='Reds',alpha=1.0)
                         plt.show()
                         
                     if save:
@@ -215,10 +226,10 @@ def main():
             if total_plot:
                 plt.figure(figsize=(12,5))
                 plt.subplot(121)
-                plt.imshow(cp.asnumpy(total_intensity), norm=colors.LogNorm(), cmap='jet')
+                plt.imshow(np.abs(cp.asnumpy(total_intensity)), cmap='jet')
                 plt.colorbar()
                 plt.subplot(122)
-                plt.imshow(cp.asnumpy(total_intensity_conv), norm=colors.LogNorm(), cmap='jet')
+                plt.imshow(np.abs(cp.asnumpy(total_intensity_conv)), cmap='jet')
                 plt.colorbar()
                 plt.show()
 

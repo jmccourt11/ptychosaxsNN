@@ -52,15 +52,40 @@ class ptychosaxsNN:
             state_dict=torch.load(state_dict_pth, map_location=torch.device('cpu'))
             self.model.load_state_dict(state_dict)
         
-    def set_device(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # def set_device(self,gpu_index=None):
+    #     self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #     if gpu_index is not None:
+    #         self.device = torch.device(f"cuda:{gpu_index}")
+    #     else:
+    #         self.device = torch.device("cpu")
+    #     self.model = self.model.to(self.device)
+        
+    #     if torch.cuda.device_count() > 1:
+    #         print("Let's use", torch.cuda.device_count(), "GPUs!")
+    #         #self.model = nn.parallel.DistributedDataParallel(self.model)
+    #         self.model = nn.DataParallel(self.model)
 
-        if torch.cuda.device_count() > 1:
-            print("Let's use", torch.cuda.device_count(), "GPUs!")
-            #self.model = nn.parallel.DistributedDataParallel(self.model)
-            self.model = nn.DataParallel(self.model)
-
-        self.model = self.model.to(self.device)
+    #     self.model = self.model.to(self.device)
+    
+    def set_device(self, gpu_index=None):
+        if torch.cuda.is_available():
+            if gpu_index is not None:
+                # Use only the specified GPU
+                self.device = torch.device(f"cuda:{gpu_index}")
+                self.model = self.model.to(self.device)
+                print(f"Using GPU {gpu_index}")
+                # Do NOT wrap with DataParallel
+            else:
+                # Use all GPUs (default)
+                self.device = torch.device("cuda")
+                self.model = self.model.to(self.device)
+                if torch.cuda.device_count() > 1:
+                    print("Let's use", torch.cuda.device_count(), "GPUs!")
+                    self.model = nn.DataParallel(self.model)
+        else:
+            self.device = torch.device("cpu")
+            self.model = self.model.to(self.device)
+            print("No GPU available")
         
     def model_size_in_megabytes(self):
         param_size = 0

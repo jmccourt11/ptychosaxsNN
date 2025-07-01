@@ -4,9 +4,13 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import sys
 import os
+import h5py
+import cupy as cp
+import scipy.io as sio
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
+
 
 
 
@@ -36,9 +40,27 @@ dps=data.copy()
 # Center and ncols and nrows will be different for different scans
 # ZC4
 #%%
+
+sample_dir = 'RC02_R3D_'
+#base_directory = '/scratch/2025_Feb/'
+base_directory = '/net/micdata/data2/12IDC/2024_Dec/results/'
+recon_path = 'MLc_L1_p10_g50_Ndp1280_mom0.5_pc0_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g50_Ndp1280_mom0.5_bg0.1_vp4_vi_mm/'
+scan_number = 888
+
+# # Load data and move to GPU
+# with h5py.File(f"{base_directory}S{scan_number:04d}/{recon_path}/recon_Niter1000.h5", 'r') as f:
+#     ob = f['object'][()]
+#     pb = f['probe'][()]
+ob = sio.loadmat(f"{base_directory}/{sample_dir}/fly{scan_number:03d}/roi0_Ndp1280/{recon_path}/Niter200.mat")
+ob_w = np.array(ob['object'])
+pb = np.array(ob['probe'])
+
+ob_w = ob
+pb1 = pb[:,:,0,0]
+
 ncols=37#41#36
 nrows=26#31#29
-center=(727,743)
+center=(734,745)
 dps_size = dps[0].shape
 center_offset_y=dps_size[0]//2-center[0]
 center_offset_x=dps_size[1]//2-center[1]
@@ -53,8 +75,44 @@ dps_cropped = dps[:,
 for i, dp in enumerate(dps_cropped):
     dp[dp >= 2**16-1] = np.min(dp)
 
+fig,axs=plt.subplots(1,4,figsize=(20,10))
+axs[0].imshow(np.sum(dps_cropped,axis=0),norm=colors.LogNorm())
+mask=np.sum(dps_cropped,axis=0)<=0
+im1=axs[1].imshow(mask)
+im2=axs[2].imshow(np.abs(np.fft.fftshift(np.fft.fft2(pb1)))*~mask,norm=colors.LogNorm())
+im3=axs[3].imshow((np.abs(np.fft.fftshift(np.fft.fft2(pb1)))*~mask)[center[0]-256:center[0]+256,center[1]-256:center[1]+256],norm=colors.LogNorm())
+plt.colorbar(im1,ax=axs[1])
+plt.colorbar(im2,ax=axs[2])
+plt.colorbar(im3,ax=axs[3])
+plt.show()
+
+save_mask=False
+if save_mask:
+np.save('/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_sum_RC02_R3D_1280.npy',mask)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #%%
+# BINNING 1280 to 256 MASK
+
 bin_factor = 256
 dps_binned = bin_ndarray(dps_cropped[0], (bin_factor, bin_factor), operation='sum')
 

@@ -12,6 +12,7 @@ import pandas as pd
 import glob
 import scipy.io as sio
 import scipy.fft as spf
+from scipy.ndimage import generic_filter
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
@@ -73,11 +74,11 @@ class DiffractionAnalyzer:
         self.dps_sum = np.sum(self.dps, axis=0)
         return self
 
-    def load_model(self, model_path):
+    def load_model(self, model_path, gpu_index=None):
         """Load the neural network model"""
         self.model = ptNN.ptychosaxsNN()
         self.model.load_model(state_dict_pth=model_path)
-        self.model.set_device()
+        self.model.set_device(gpu_index=gpu_index)
         self.model.model.to(self.model.device)
         self.model.model.eval()
         return self
@@ -791,25 +792,23 @@ class DiffractionAnalyzer:
                     if not probe_label_added:
                         probe_label_added = True
         
-        ax1.set_title(f'Full Scan - {("Deconvolved" if use_deconvolved else "Original")}\n', fontsize=24)
+        ax1.set_title(f'Full Scan - {("Deconvolved" if use_deconvolved else "Raw")}\n', fontsize=32)
         ax1.axis('equal')
-        ax1.set_xlabel('X Position (nm)', fontsize=22)
-        ax1.set_ylabel('Y Position (nm)', fontsize=22)
-        
-        # Increase tick label sizes
-        ax1.tick_params(axis='both', which='major', labelsize=18)
+        ax1.set_xlabel('X Position (nm)', fontsize=28)
+        ax1.set_ylabel('Y Position (nm)', fontsize=28)
+        ax1.tick_params(axis='both', which='major', labelsize=24)
         
         # Add legend with larger font size, only if any highlights or probe shown
         handles, labels = ax1.get_legend_handles_labels()
         if handles:
-            ax1.legend(fontsize=16, loc='upper right', bbox_to_anchor=(1.0, 1.0))
+            ax1.legend(fontsize=24, loc='upper right', bbox_to_anchor=(1.0, 1.0))
         
         plt.tight_layout()
         if save_path is not None:
             plt.savefig(save_path, dpi=300)
         plt.show()
 
-    def extract_sample_patterns(self, threshold=0.1, use_deconvolved=False, show_mask=False):
+    def extract_sample_patterns(self, threshold=0.1, use_deconvolved=False, show_mask=False, mask_type='threshold', variance_window=9, variance_threshold=0.01):
         """
         Extract diffraction patterns that overlap with the sample region.
         
@@ -817,7 +816,10 @@ class DiffractionAnalyzer:
             threshold (float): Threshold for considering a region as sample (default: 0.1)
             use_deconvolved (bool): Whether to use deconvolved patterns instead of raw data
             show_mask (bool): Whether to display the binary mask visualization
-            
+            mask_type (str): Type of mask to use: 'threshold', 'variance', or 'both' (default: 'threshold')
+            variance_window (int): Window size for local variance (default: 9)
+            variance_threshold (float): Threshold for local variance (default: 0.01)
+        
         Returns:
             tuple: (patterns, indices) where patterns are the extracted patterns and indices are their positions
         """
@@ -832,13 +834,27 @@ class DiffractionAnalyzer:
         obj_path = f"/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly{self.scan_number}/roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/Niter1000.mat"
         obj = sio.loadmat(obj_path)["object_roi"]
         obj = np.flipud(np.fliplr(obj))
-        
-        # Create a binary mask of the sample region
-        obj_abs = np.abs(obj)
-        obj_mask = obj_abs < threshold * np.max(obj_abs)
-        
+
+        # Create mask(s)
+        if mask_type == 'threshold':
+            obj_abs = np.abs(obj)
+            obj_mask = obj_abs < threshold * np.max(obj_abs)
+        elif mask_type == 'variance':
+            obj_phase = np.angle(obj)
+            local_var = generic_filter(obj_phase, np.var, size=variance_window)
+            obj_mask = local_var > variance_threshold
+        elif mask_type == 'both':
+            obj_abs = np.abs(obj)
+            threshold_mask = obj_abs < threshold * np.max(obj_abs)
+            obj_phase = np.angle(obj)
+            local_var = generic_filter(obj_phase, np.var, size=variance_window)
+            variance_mask = local_var > variance_threshold
+            obj_mask = np.logical_and(threshold_mask, variance_mask)
+        else:
+            raise ValueError("mask_type must be 'threshold', 'variance', or 'both'")
+
         if show_mask:
-            self._visualize_sample_mask(obj, obj_mask, obj_abs, threshold)
+            self._visualize_sample_mask(obj, obj_mask, np.abs(obj), threshold if mask_type == 'threshold' else variance_threshold)
         
         # Calculate object extent
         obj_extent = [
@@ -972,13 +988,36 @@ class DiffractionAnalyzer:
                 # Load data
                 analyzer.load_and_crop_data()
                 
-                # Get sample pattern indices
-                _, indices = analyzer.extract_sample_patterns(
-                    threshold=threshold,
-                    use_deconvolved=False,  # Using raw patterns since we don't need deconvolved ones for indices
-                    show_mask=show_mask
-                )
                 
+                # Get sample pattern indices
+                variance_window=5
+                variance_threshold=0.01
+                threshold=0.5
+                
+                
+                # # USE THRESHOLD MASK
+                # _, indices = analyzer.extract_sample_patterns(
+                #     threshold=threshold,
+                #     use_deconvolved=False,  # Using raw patterns since we don't need deconvolved ones for indices
+                #     show_mask=show_mask,
+                #     mask_type=mask_type
+                # )
+                
+                # #USE VARIANCE MASK INSTED OF THRESHOLD MASK
+
+                # _, indices = analyzer.extract_sample_patterns(mask_type='variance', 
+                #                                               variance_window=variance_window, 
+                #                                               variance_threshold=variance_threshold,
+                #                                               use_deconvolved=False)
+                
+                
+                # USE BOTH MASKS
+                print('Using both masks')
+                _, indices = analyzer.extract_sample_patterns(mask_type='both', 
+                                                              threshold=threshold, 
+                                                              variance_window=variance_window, 
+                                                              variance_threshold=variance_threshold,
+                                                              use_deconvolved=False)                
                 # Store indices for this scan
                 all_indices[str(scan_number)] = indices
                 
@@ -994,7 +1033,9 @@ class DiffractionAnalyzer:
                     # Add metadata if it's the first scan
                     if i == 0:
                         f.attrs['creation_date'] = timestamp
-                        f.attrs['threshold'] = threshold
+                        #f.attrs['threshold'] = threshold
+                        f.attrs['variance_window'] = variance_window
+                        f.attrs['variance_threshold'] = variance_threshold
                         f.attrs['dp_size'] = dp_size
                 
                 # Write to backup file
@@ -1006,7 +1047,9 @@ class DiffractionAnalyzer:
                     # Add metadata if it's the first scan
                     if i == 0:
                         f.attrs['creation_date'] = timestamp
-                        f.attrs['threshold'] = threshold
+                        #f.attrs['threshold'] = threshold
+                        f.attrs['variance_window'] = variance_window
+                        f.attrs['variance_threshold'] = variance_threshold
                         f.attrs['dp_size'] = dp_size
                 
                 print(f"Saved results for scan {scan_number} to {output_file} and backup")
@@ -1117,22 +1160,31 @@ plt.show()
 import h5py
 with h5py.File("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/data_roi0_Ndp256_dp.hdf5",'r') as f:
     index = 666
-    full_img = f['dp'][()][index]
+    full_img = f['dp'][()][index].copy()
+    mask = np.load('/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_ZCB_9_3D.npy')    
+    full_img, _, _ = ptNN_U.preprocess_ZCB_9(full_img, mask)
+    full_img=np.array(full_img[0][0])
     zoom_img = full_img[128-64:128+64, 128-64:128+64]
-
+    plt.figure(figsize=(15,15))
     # Overlay the zoomed-in image, centered
     # The zoomed region covers x: 64 to 192, y: 64 to 192
     plt.imshow(
         zoom_img,
         cmap='jet',
-        norm=colors.LogNorm(),
+       # norm=colors.LogNorm(),
         extent=[128-64, 128+64, 128+64, 128-64],  # [xmin, xmax, ymax, ymin]
         alpha=1.0
     )
     
     # Plot the full image
-    plt.imshow(full_img, norm=colors.LogNorm(), alpha=0.3,cmap='jet')
-
+    plt.imshow(full_img, 
+               #norm=colors.LogNorm(), 
+               alpha=0.3,cmap='jet')
+    plt.xticks(fontsize=24)
+    plt.yticks(fontsize=24)
+    cbar = plt.colorbar(location='right', pad=0.08, shrink=0.75)
+    cbar.set_label('Normalized Intensity', fontsize=24,labelpad=16)
+    cbar.ax.tick_params(labelsize=20)
     plt.show()
 #%%)
 # pb=ob['probe']
@@ -1194,9 +1246,11 @@ with h5py.File("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/data
 
 # %%
 
+
+
 analyzer = DiffractionAnalyzer(
         base_path='/net/micdata/data2/12IDC/2025_Feb/ptycho/',
-        scan_number=5065,#5102,
+        scan_number=5102,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
@@ -1207,11 +1261,26 @@ analyzer = DiffractionAnalyzer(
 # Load and process data
 analyzer.load_and_crop_data()
 #%%
-analyzer.load_model(model_path=model_path)
+# Make sure you're on GPU
+device = analyzer.model.device
+
+# Create start and end events
+start_event = torch.cuda.Event(enable_timing=True)
+end_event = torch.cuda.Event(enable_timing=True)
+
+# Start timing
+start_event.record()
+analyzer.load_model(model_path=model_path,gpu_index=1)
 analyzer.perform_deconvolution()
+# End timing
+end_event.record()
 
+# Wait for the events to be recorded
+torch.cuda.synchronize()
 
-
+# Compute elapsed time in milliseconds
+elapsed_time_ms = start_event.elapsed_time(end_event)
+print(f"Elapsed time: {elapsed_time_ms:.3f} ms")
 #%%
 # Load probe
 analyzer.load_probe(pb1)
@@ -1247,13 +1316,25 @@ for i in [664,483,769]:
 
 # %%
 # After initializing and loading data into analyzer
-sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.6, use_deconvolved=True,show_mask=True)
-
+#sample_patterns, sample_indices = analyzer.extract_sample_patterns(threshold=0.5, use_deconvolved=True,show_mask=True)
 
 #%%
+# Only threshold
+patterns, indices = analyzer.extract_sample_patterns(mask_type='threshold', threshold=0.5,show_mask=True,use_deconvolved=False)
+#%%
+# Only variance
+patterns, indices = analyzer.extract_sample_patterns(mask_type='variance', variance_window=5, variance_threshold=0.01,show_mask=True,use_deconvolved=False)
+#%%
+# # Both masks
+patterns, indices = analyzer.extract_sample_patterns(mask_type='both', threshold=0.5, variance_window=5, variance_threshold=0.01,show_mask=True,use_deconvolved=False)
+
+#%%
+sample_patterns=patterns.copy()
+sample_indices=indices.copy()
 # You can then use these patterns for further analysis
 print(f"Found {len(sample_patterns)} patterns over the sample region")
 print(f"Pattern indices: {sample_indices}")
+#%%
 # Plot a pattern (100)
 plt.figure(figsize=(10, 10))
 plt.imshow(sample_patterns[0], norm=colors.LogNorm())
@@ -1269,29 +1350,44 @@ plt.imshow(np.sum([10**(sample_patterns[i]*sf+bkg) for i in range(len(sample_pat
 plt.colorbar()
 plt.show()
 
+temp_variance=np.sum([10**(sample_patterns[i]*sf+bkg) for i in range(len(sample_patterns))], axis=0)
+
+#%%
+fig, ax = plt.subplots(1, 3, figsize=(10, 5))
+im1 = ax[0].imshow(temp_variance, norm=colors.LogNorm())
+plt.colorbar(im1, ax=ax[0])
+im2 = ax[1].imshow(temp_thresh, norm=colors.LogNorm())
+plt.colorbar(im2, ax=ax[1])
+diff=-temp_variance+temp_thresh
+im3 = ax[2].imshow(diff)
+plt.colorbar(im3, ax=ax[2])
+plt.show()
+
+
 
 # %%
 # Define your scan parameters
 scan_numbers = [5025, 5065, 5102]  # Add your scan numbers here
 base_path = '/net/micdata/data2/12IDC/2025_Feb/ptycho/'
+base_path='/scratch/2025_Feb/ptycho/'
 dp_size = 256
 center_offset_y = center_offset_y  # Using the existing variable
 center_offset_x = center_offset_x  # Using the existing variable
 
-# #Process all scans and save indices
-# indices = DiffractionAnalyzer.process_multiple_scans(
-#     scan_numbers=df['scanNo'].values.tolist(),#scan_numbers,
-#     base_path=base_path,
-#     dp_size=dp_size,
-#     center_offset_y=center_offset_y,
-#     center_offset_x=center_offset_x,
-#     threshold=0.5,  # Adjust threshold as needed
-#     output_file='ZCB_9_3D_sample_indices.h5',
-#     show_mask=False  # Set to True if you want to see the mask for each scan
-# )
+#Process all scans and save indices
+indices = DiffractionAnalyzer.process_multiple_scans(
+    scan_numbers=df['scanNo'].values.tolist(),#scan_numbers,
+    base_path=base_path,
+    dp_size=dp_size,
+    center_offset_y=center_offset_y,
+    center_offset_x=center_offset_x,
+    #threshold=0.5,  # Adjust threshold as needed
+    output_file='ZCB_9_3D_sample_indices_variance_threshold.h5',
+    show_mask=False  # Set to True if you want to see the mask for each scan
+)
 
 # Later, you can load the indices from the file
-loaded_indices = DiffractionAnalyzer.load_sample_indices('ZCB_9_3D_sample_indices.h5')
+loaded_indices = DiffractionAnalyzer.load_sample_indices('ZCB_9_3D_sample_indices_variance_threshold.h5')
 
 # Print some information about the loaded indices
 for scan_number, scan_indices in loaded_indices.items():

@@ -18,6 +18,10 @@ from scipy.spatial.transform import Rotation
 import colorsys
 from sklearn.cluster import DBSCAN
 import scipy.io as sio
+from skimage.measure import profile_line
+from matplotlib import colors
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
 #%%
 def create_hsv_colorscale(n_colors=100):
     colors = []
@@ -32,6 +36,71 @@ def create_hsv_colorscale(n_colors=100):
     # Add the first color again at the end to make it cyclic
     colors.append([1.0, colors[0][1]])
     return colors
+
+
+def plot_arbitrary_line_profile(projection, src, dst, linewidth=1, title='Arbitrary Line Profile', show_plot=True):
+    """
+    Plot a line profile between two points (src, dst) in the projection.
+    src, dst: (row, col) coordinates
+    """
+    prof = profile_line(projection, src, dst, linewidth=linewidth, mode='reflect')
+    if show_plot:
+        plt.figure(figsize=(8,4))
+        plt.plot(prof)
+        plt.xlabel('Distance along line')
+        plt.ylabel('Intensity')
+        plt.title(title + f' ({src} to {dst})')
+        plt.show()
+    
+        plt.figure(figsize=(12,12))
+        plt.imshow(projection, cmap='gray')
+        plt.plot([src[1], dst[1]], [src[0], dst[0]], 'r-', linewidth=linewidth)
+        plt.plot(src[1], src[0], 'go', label='Start')
+        plt.plot(dst[1], dst[0], 'ro', label='End') 
+        plt.colorbar(label='Intensity')
+        plt.xlabel('X')
+        plt.ylabel('Y')
+        plt.title(title + f' ({src} to {dst})')
+        plt.legend()
+        plt.show()
+    return prof
+
+
+def plot_1d_fft(profile, pixel_size=None, title="Fourier Spectrum", show_phase=False, show_plot=True):
+    """
+    Compute and plot the amplitude (and optionally phase) spectrum of a 1D profile.
+    pixel_size: If provided, will convert x-axis to spatial frequency (1/pixel_size units)
+    """
+    N = len(profile)
+    fft_vals = np.fft.fft(profile)
+    fft_freqs = np.fft.fftfreq(N, d=pixel_size if pixel_size else 1)
+    amplitude = np.abs(fft_vals)
+    phase = np.angle(fft_vals)
+    
+    # Only plot the positive frequencies
+    if show_plot:
+        pos_mask = fft_freqs >= 0
+        plt.figure(figsize=(8,4))
+        plt.plot(fft_freqs[pos_mask], amplitude[pos_mask], label='Amplitude')
+        plt.xlabel('Frequency (1/pixel)' if pixel_size is None else f'Frequency (1/{pixel_size} units)')
+        plt.ylabel('Amplitude')
+        plt.title(title)
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+        
+    if show_phase:
+        plt.figure(figsize=(8,4))
+        plt.plot(fft_freqs[pos_mask], phase[pos_mask], label='Phase')
+        plt.xlabel('Frequency (1/pixel)' if pixel_size is None else f'Frequency (1/{pixel_size} units)')
+        plt.ylabel('Phase (radians)')
+        plt.title(title + " (Phase)")
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+    
+    return fft_freqs, amplitude, phase
+
 
 def get_orientation_matrix(peak_positions, peak_values):
     """
@@ -1859,7 +1928,353 @@ def test_orientation_analysis(voxel_data, crystal_peaks, z_idx, y_idx, x_idx, h,
         return fig, best_angle, best_rmsd
     else:
         return None, best_angle, best_rmsd
-#%%
+
+
+def project_and_plot_along_hkl(data, cellinfo_data, h, k, l, title_prefix="", is_reciprocal=False, q_vectors=None,
+                               pixel_size=None, show_plot=True, return_vector=False):
+    """
+    Rotate a 3D tomogram to align with a specified hkl vector, project it, and plot.
+
+    Args:
+        data (np.ndarray): 3D tomogram data (real or reciprocal space).
+        cellinfo_data (dict): Dictionary with unit cell info, must contain 'recilatticevectors' and 'latticevectors'.
+        h, k, l (int): Miller indices of the projection direction.
+        title_prefix (str): Prefix for the plot title.
+        is_reciprocal (bool): Flag if the data is in reciprocal space.
+        q_vectors (np.ndarray): Q vectors for reciprocal space data. Shape (N, 3) or tuple of QX,QY,QZ.
+        pixel_size (float): Real space pixel size for labeling axes.
+        return_vector (bool): If True, also return the projection vector and center used.
+    """
+    # 1. Calculate projection vector for the given (h,k,l)
+    if is_reciprocal:
+        print("Using reciprocal space vectors")
+        vectors = cellinfo_data['recilatticevectors']
+    else:
+        print("Using real space vectors")
+        vectors = cellinfo_data['latticevectors'] 
+    v_hkl = h * vectors[0] + k * vectors[1] + l * vectors[2]
+    print(f"v_hkl: {v_hkl}")
+    if np.linalg.norm(v_hkl) == 0:
+        print(f"Error: (h,k,l)=({h},{k},{l}) vector is zero.")
+        return None, None
+
+    # Use geometric center as the origin
+    center = (np.array(data.shape) - 1) / 2.0
+    print(f"Geometric center: {center}")
+
+    # 2. Create rotation matrix to align an axis (e.g., z) with v_hkl
+    u_proj = v_hkl / np.linalg.norm(v_hkl) # This is the new z-axis direction
+
+    # Find two orthogonal vectors to u_proj to form a new basis
+    if np.abs(np.dot(u_proj, np.array([0, 0, 1]))) < 0.99:
+        helper_vec = np.array([0, 0, 1])
+    else:
+        helper_vec = np.array([0, 1, 0])
+        
+    new_x_dir = np.cross(helper_vec, u_proj)
+    new_x_dir /= np.linalg.norm(new_x_dir)
+    
+    new_y_dir = np.cross(u_proj, new_x_dir)
+    
+    # Rotation matrix to transform from original to new basis
+    # Rows are the new basis vectors
+    R = np.array([new_x_dir, new_y_dir, u_proj])
+
+    # The matrix for affine_transform should be the inverse, mapping output coords to input coords
+    # which is the transpose of R.
+    transform_matrix = R.T
+
+    # The rotation should be about the geometric center of the volume.
+    offset = center - transform_matrix @ center
+    
+    # 3. Rotate the data
+    rotated_data = ndi.affine_transform(data, transform_matrix, offset=offset, order=1, output_shape=data.shape)
+    
+    # 4. Project along the new z-axis (the hkl direction)
+    projection = np.sum(rotated_data, axis=2) # The last axis corresponds to u_proj direction
+    
+    # 5. Plot the projection
+    fig = go.Figure()
+
+    # Determine axis labels and extent
+    if is_reciprocal and q_vectors is not None:
+        if isinstance(q_vectors, tuple) or isinstance(q_vectors, list):
+             QX, QY, QZ = q_vectors
+             q_vec_array = np.column_stack((QX.flatten(), QY.flatten(), QZ.flatten()))
+        else:
+             q_vec_array = q_vectors
+
+        q_min = np.min(q_vec_array, axis=0)
+        q_max = np.max(q_vec_array, axis=0)
+        
+        corners = np.array([
+            [q_min[0], q_min[1], q_min[2]], [q_max[0], q_min[1], q_min[2]],
+            [q_min[0], q_max[1], q_min[2]], [q_max[0], q_max[1], q_min[2]],
+            [q_min[0], q_min[1], q_max[2]], [q_max[0], q_min[1], q_max[2]],
+            [q_min[0], q_max[1], q_max[2]], [q_max[0], q_max[1], q_max[2]]
+        ])
+        
+        x_coords = corners @ new_x_dir
+        y_coords = corners @ new_y_dir
+        
+        xlabel = "Projection Axis 1 (Å⁻¹)"
+        ylabel = "Projection Axis 2 (Å⁻¹)"
+        x_range = [np.min(x_coords), np.max(x_coords)]
+        y_range = [np.min(y_coords), np.max(y_coords)]
+        
+        fig.add_trace(go.Heatmap(z=projection.T, x=np.linspace(x_range[0], x_range[1], projection.shape[0]), y=np.linspace(y_range[0], y_range[1], projection.shape[1]), colorscale='viridis'))
+
+    elif not is_reciprocal and pixel_size is not None:
+        shape = data.shape
+        H, W = shape
+        x = np.arange(W) * pixel_size
+        y = np.arange(H) * pixel_size
+        xlabel = "Projection Axis 1 (nm)"
+        ylabel = "Projection Axis 2 (nm)"
+        fig.add_trace(go.Heatmap(z=projection.T, x=x, y=y, colorscale='jet'))
+    else:
+        xlabel = "Projection Axis 1 (pixels)"
+        ylabel = "Projection Axis 2 (pixels)"
+        fig.add_trace(go.Heatmap(z=projection.T, colorscale='jet'))
+
+    fig.update_layout(
+        title=f"{title_prefix} Projection along ({h},{k},{l})",
+        xaxis_title=xlabel,
+        yaxis_title=ylabel,
+        width=800, height=700,
+        xaxis=dict(constrain="domain"),
+        yaxis=dict(constrain="domain")
+    )
+    if show_plot:
+        fig.show()
+    
+    if return_vector:
+        return projection, rotated_data, v_hkl, center
+    return projection, rotated_data
+
+def plot_hkl_vector_in_tomogram(data, cellinfo_data, h, k, l, is_reciprocal=False, scale=0.5, show_plot=True, plot_tomogram=True, intensity_threshold=0.8):
+    """
+    Plot a given hkl vector as an arrow in the tomogram, with the origin at the tomogram's geometric center.
+    Optionally overlay the tomogram as a 3D scatter of high-intensity points.
+    The camera view is set to look along the hkl vector.
+    Args:
+        data (np.ndarray): 3D tomogram data (real or reciprocal space).
+        cellinfo_data (dict): Dictionary with unit cell info.
+        h, k, l (int): Miller indices.
+        is_reciprocal (bool): Use reciprocal lattice vectors if True, else real space.
+        scale (float): Length scaling factor for the arrow.
+        show_plot (bool): Whether to show the plot.
+        plot_tomogram (bool): Whether to plot the tomogram points in the same figure.
+        intensity_threshold (float): Relative threshold for tomogram points (0-1).
+    Returns:
+        fig: Plotly figure object.
+    """
+    center = (np.array(data.shape) - 1) / 2.0
+    if is_reciprocal:
+        vectors = cellinfo_data['recilatticevectors']
+    else:
+        vectors = cellinfo_data['latticevectors']
+    v_hkl = h * vectors[0] + k * vectors[1] + l * vectors[2]
+    v_hkl_norm = v_hkl / np.linalg.norm(v_hkl)
+    v_hkl_scaled = v_hkl_norm * 2.5# * np.min(data.shape)  # Camera distance factor
+    # Arrow from geometric center
+    start = center
+    end = center + v_hkl_norm * scale * np.min(data.shape)
+    # Plot
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    if plot_tomogram:
+        # Plot tomogram as gray points above threshold
+        max_intensity = data.max()
+        threshold = max_intensity * intensity_threshold
+        mask = data > threshold
+        z, y, x = np.where(mask)
+        intensities = data[mask]
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z,
+            mode='markers',
+            marker=dict(size=2, color='gray', opacity=0.2),
+            name='Tomogram'
+        ))
+    fig.add_trace(go.Scatter3d(
+        x=[start[2], end[2]],
+        y=[start[1], end[1]],
+        z=[start[0], end[0]],
+        mode='lines+markers',
+        line=dict(color='red', width=6),
+        marker=dict(size=6, color='blue'),
+        name=f'hkl=({h},{k},{l})'
+    ))
+    fig.add_trace(go.Scatter3d(
+        x=[start[2]], y=[start[1]], z=[start[0]],
+        mode='markers', marker=dict(size=8, color='green'), name='Geometric Center'
+    ))
+    # Set camera to look along the hkl vector
+    camera_eye = dict(x=float(v_hkl_scaled[0]), y=float(v_hkl_scaled[1]), z=float(v_hkl_scaled[2]))
+    fig.update_layout(
+        title=f'hkl=({h},{k},{l}) vector in tomogram',
+        scene=dict(
+            xaxis_title='X', yaxis_title='Y', zaxis_title='Z', aspectmode='cube',
+            camera=dict(eye=camera_eye)
+        ),
+        width=800, height=800
+    )
+    if show_plot:
+        fig.show()
+    return fig
+
+def plot_unit_cell_in_tomogram(data, cellinfo_data, plot_tomogram=True, intensity_threshold=0.8, show_plot=True, pixel_size=56):
+    """
+    Plot the unit cell box (from latticevectors) overlaid on the tomogram, using the geometric center as the origin.
+    Args:
+        data (np.ndarray): 3D tomogram data.
+        cellinfo_data (dict): Must contain 'latticevectors' in nm units.
+        plot_tomogram (bool): Whether to plot the tomogram points.
+        intensity_threshold (float): Threshold for tomogram points.
+        show_plot (bool): Whether to show the plot.
+        pixel_size (float): Pixel size in nm.
+    Returns:
+        fig: Plotly figure object.
+    """
+    import plotly.graph_objects as go
+    center = (np.array(data.shape) - 1) / 2.0
+    # Convert lattice vectors from nm to pixels
+    a, b, c = [np.array(v) / pixel_size for v in cellinfo_data['latticevectors']]
+    # Define 8 corners of the unit cell, centered at the geometric center
+    corners = [
+        center + 0*a + 0*b + 0*c,
+        center + 1*a + 0*b + 0*c,
+        center + 1*a + 1*b + 0*c,
+        center + 0*a + 1*b + 0*c,
+        center + 0*a + 0*b + 1*c,
+        center + 1*a + 0*b + 1*c,
+        center + 1*a + 1*b + 1*c,
+        center + 0*a + 1*b + 1*c,
+    ]
+    corners = [np.array(pt) for pt in corners]
+    # Define edges as pairs of corner indices
+    edges = [
+        (0,1),(1,2),(2,3),(3,0), # bottom face
+        (4,5),(5,6),(6,7),(7,4), # top face
+        (0,4),(1,5),(2,6),(3,7)  # vertical edges
+    ]
+    fig = go.Figure()
+    if plot_tomogram:
+        max_intensity = data.max()
+        threshold = max_intensity * intensity_threshold
+        mask = data > threshold
+        z, y, x = np.where(mask)
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z,
+            mode='markers',
+            marker=dict(size=2, color='gray', opacity=0.2),
+            name='Tomogram'))
+    # Plot unit cell edges
+    for i,j in edges:
+        fig.add_trace(go.Scatter3d(
+            x=[corners[i][2], corners[j][2]],
+            y=[corners[i][1], corners[j][1]],
+            z=[corners[i][0], corners[j][0]],
+            mode='lines',
+            line=dict(color='orange', width=4),
+            name='Unit Cell' if i==0 and j==1 else None,
+            showlegend=(i==0 and j==1)
+        ))
+    fig.add_trace(go.Scatter3d(
+        x=[center[2]], y=[center[1]], z=[center[0]],
+        mode='markers', marker=dict(size=8, color='green'), name='Geometric Center'))
+    fig.update_layout(
+        title='Unit Cell in Tomogram',
+        scene=dict(
+            xaxis_title='X', yaxis_title='Y', zaxis_title='Z', aspectmode='cube'
+        ),
+        width=800, height=800
+    )
+    if show_plot:
+        fig.show()
+    return fig
+
+def plot_hkl_projection_grid(tomo_data, magnitude_test, cellinfo_data, pixel_size=56):
+    """
+    Plot a grid of real and reciprocal space projections for all hkl in [-1,0,1]^3 (excluding (0,0,0)).
+    tomo_data: 3D real space data
+    magnitude_test: 3D reciprocal space mask/data
+    cellinfo_data: dict with 'recilatticevectors'
+    pixel_size: for real space axis labeling
+    """
+    import matplotlib.pyplot as plt
+    from itertools import product
+    
+    hkls = [hkl for hkl in product([-1,0,1], repeat=3) if hkl != (0,0,0)]
+    n = len(hkls)
+    ncols = 9
+    nrows = 2 * ((n + ncols - 1) // ncols)  # 2 rows per hkl set (real/recip)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.5*ncols, 2.5*nrows), squeeze=False)
+    
+    for idx, (h,k,l) in tqdm(enumerate(hkls),total=len(hkls),desc="Plotting hkl projections..."):
+        row_real = 2 * (idx // ncols)
+        col = idx % ncols
+        row_recip = row_real + 1
+        # Real space
+        proj_real, _ = project_and_plot_along_hkl(
+            tomo_data, cellinfo_data, h, k, l, title_prefix="", is_reciprocal=False, q_vectors=None, \
+                pixel_size=pixel_size,show_plot=False)
+        # Reciprocal space
+        proj_recip, _ = project_and_plot_along_hkl(
+            magnitude_test, cellinfo_data, h, k, l, title_prefix="", is_reciprocal=True, q_vectors=None, \
+                pixel_size=pixel_size,show_plot=False)
+        # Plot real
+        ax_real = axes[row_real, col]
+        im1 = ax_real.imshow(proj_real.T, cmap='jet', aspect='auto')
+        ax_real.set_title(f"hkl=({h},{k},{l})\nReal")
+        ax_real.axis('off')
+        # Plot reciprocal
+        ax_recip = axes[row_recip, col]
+        im2 = ax_recip.imshow(proj_recip.T, cmap='jet', aspect='auto')
+        ax_recip.set_title(f"hkl=({h},{k},{l})\nRecip")
+        ax_recip.axis('off')
+    # Remove unused axes
+    for i in range(idx+1, (nrows//2)*ncols):
+        axes[2*(i//ncols), i%ncols].axis('off')
+        axes[2*(i//ncols)+1, i%ncols].axis('off')
+    plt.tight_layout()
+    plt.show()
+
+# #%%
+# def create_cubic_lattice_spheres(shape=(64, 64, 64), spacing=16, radius=5, sphere_value=1.0, background=0.0):
+#     """
+#     Create a 3D numpy array with a simple cubic lattice of spheres.
+#     shape: (z, y, x) size of the volume
+#     spacing: lattice constant (distance between sphere centers, in pixels)
+#     radius: radius of each sphere (in pixels)
+#     sphere_value: value inside spheres
+#     background: value outside spheres
+#     """
+#     arr = np.full(shape, background, dtype=np.float32)
+#     zz, yy, xx = np.indices(shape)
+#     for z0 in range(spacing//2, shape[0], spacing):
+#         for y0 in range(spacing//2, shape[1], spacing):
+#             for x0 in range(spacing//2, shape[2], spacing):
+#                 mask = (xx-x0)**2 + (yy-y0)**2 + (zz-z0)**2 <= radius**2
+#                 arr[mask] = sphere_value
+#     return arr
+
+
+# # Create the lattice
+# lattice = create_cubic_lattice_spheres(shape=(64, 64, 64), spacing=32, radius=32//2)
+
+# # Define a fake cellinfo_data for a cubic lattice (a = 1 for simplicity)
+# cellinfo_data = {
+#     'latticevectors': np.array([[1,0,0],[0,1,0],[0,0,1]]),  # a, b, c
+#     'recilatticevectors': np.array([[1,0,0],[0,1,0],[0,0,1]])  # for test, just identity
+# }
+
+# # Project along (1,0,0), (1,1,0), (1,1,1)
+# for hkl in [(1,0,0), (1,0,1), (1,1,1)]:
+#     project_and_plot_along_hkl(lattice, cellinfo_data, *hkl, \
+#         title_prefix=f'Cubic lattice', is_reciprocal=False, pixel_size=None)
+# #%%
+
 def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cellinfo_data, hs, ks, ls, threshold_D=0.5, threshold_tomo_FFT=0.002, q_cutoff=0.07, peak_distance_threshold=0.01):
     """
     Create a combined plot showing reciprocal space data, FFT, and unit cell peaks.
@@ -1897,12 +2312,6 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
     ky_filtered = ky_flat[mask]
     kz_filtered = kz_flat[mask]
     magnitude_filtered = magnitude_flat[mask]
-    
-    mask = (magnitude_filtered > threshold_D * np.max(magnitude_filtered)) 
-    kx_filtered = kx_filtered[mask]
-    ky_filtered = ky_filtered[mask]
-    kz_filtered = kz_filtered[mask]
-    magnitude_filtered = magnitude_filtered[mask]
     
     # Add reciprocal space data
     fig.add_trace(go.Scatter3d(
@@ -2122,8 +2531,25 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
 # Load the data
 #tomogram = "/net/micdata/data2/12IDC/2024_Dec/misc/JM02_3D/ROI2_Ndp512_MLc_p10_gInf_Iter1000/recons/tomogram_alignment_recon_cropped_14nm_2.tif"
 #tomogram = "/net/micdata/data2/12IDC//2021_Nov/results/tomography/Sample6_tomo6_SIRT_tomogram.tif"
-tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_56nm.tiff"
-tomo_data = tifffile.imread(tomogram)#.swapaxes(1,2) #need to swap x and y axes for cell info to match the tomogram
+
+#tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_56nm.tiff"
+#tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_28nm.tiff"
+tomogram = "/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/180_projections_tomogram_alignment_recon_28nm.tiff"  
+#tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_8_3D_/tomogram_alignment_recon_56nm.tiff"
+
+tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_3D_/tomogram_alignment_recon_28nm.tif"
+#tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_/new_tomogram_alignment_recon_56nm.tiff"
+tomo_data = tifffile.imread(tomogram)
+# Get current shape
+shape = tomo_data.shape
+
+
+# # Calculate start indices to center the crop
+# start_z = (shape[0] - 390) // 2
+# start_y = (shape[1] - 502) // 2
+# start_x = (shape[2] - 506) // 2
+# # Crop to specified size
+# tomo_data = tomo_data[start_z:start_z+390, start_y:start_y+502, start_x:start_x+506]
 
 #Rotate the tomogram
 axis='z'
@@ -2136,24 +2562,27 @@ elif axis == 'z':
     rotated_data = rotate(tomo_data, angle, axes=(0, 1), reshape=False)
 tomo_data = rotated_data
 
-# # Create and display the plot
-# fig = plot_3D_tomogram(tomo_data, intensity_threshold=0.7)
-# fig.show()
+# Create and display the plot
+intensity_threshold=0.8#0.6
+fig = plot_3D_tomogram(tomo_data, intensity_threshold=intensity_threshold)
+fig.show()
 
 
 # Print dimensions
 print(f"Tomogram shape: {tomo_data.shape}")
 
+pixel_size=28
 
 #%%
 
 #magnitude, KX, KY, KZ = compute_fft(tomo_data, use_vignette=True)
-magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=28,scale=1)
+magnitude, KX, KY, KZ=compute_fft_q(tomo_data, use_vignette=True, pixel_size=pixel_size,scale=1)
 
 
 
 # Define a threshold for the magnitude
-threshold = 0.00005* np.max(magnitude)  # Example: 10% of the max magnitude
+threshold_factor=0.001#0.0005
+threshold = threshold_factor* np.max(magnitude)  # Example: 10% of the max magnitude
 
 # Flatten the arrays
 kx_flat = KX.flatten()
@@ -2165,7 +2594,8 @@ magnitude_flat = magnitude.flatten()
 radial_distance = np.sqrt(kx_flat**2 + ky_flat**2 + kz_flat**2)
 
 # Apply both magnitude threshold and center cutoff
-mask = (magnitude_flat > threshold) & (radial_distance > 0.06)
+center_cutoff_radius=0.025#0.015
+mask = (magnitude_flat > threshold) & (radial_distance > center_cutoff_radius)
 
 # Apply the threshold
 kx_filtered = kx_flat[mask]
@@ -2230,8 +2660,10 @@ fig_fft.update_layout(
 # Run test
 # Load and plot cell info
 #cellinfo_data = load_cellinfo_data("/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/cellinfo.mat")
-#cellinfo_data = load_cellinfo_data("cellinfo.mat")
-cellinfo_data = load_cellinfo_data("cellinfo_256_BL.mat")
+#cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_9.mat")
+#cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_8.mat")
+cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZC4.mat")
+#cellinfo_data = load_cellinfo_data("cellinfo_256_BL.mat")
 # hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
 # ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
 # ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
@@ -2239,7 +2671,7 @@ cellinfo_data = load_cellinfo_data("cellinfo_256_BL.mat")
 
 from itertools import product
 # Generate all combinations for h, k, l in [-1, 0, 1]
-hkl = np.array(list(product([-1, 0, 1], repeat=3)))
+hkl = np.array(list(product([-2, -1, 0, 1, 2], repeat=3)))
 
 # Separate into hs, ks, ls arrays
 hs = hkl[:, 0]
@@ -2253,7 +2685,7 @@ vs=[]
 
 # Voxel size
 # Pixel size is ~56nm
-pixel_size=56 #nm
+pixel_size=pixel_size #nm
 limiting_axes=np.min(tomo_data.shape) #pixels
 tomo_nm_size=pixel_size*limiting_axes #nm
 n_unit_cells=tomo_nm_size//(cellinfo_data['Vol'][0][0]**(1/3)) #n unit cells / tomogram
@@ -2272,7 +2704,7 @@ print(f"Number of voxels (z, y, x): {voxel_results['n_voxels']}")
 show_plots = False
 
 # Define a threshold for the magnitude
-threshold = 0.05 # Example: 5% of the max magnitude
+threshold = 0.2 # Example: 5% of the max magnitude
 
 # Peak finding threshold and sigma
 peak_threshold=0.1
@@ -2289,7 +2721,7 @@ fig_fft.add_trace(go.Scatter3d(
     y=vs.T[1],
     z=vs.T[2],
     mode='markers',
-    marker=dict(size=10, color='red', opacity=0.8),
+    marker=dict(size=5, color='red', opacity=0.1),
     name='Cell Info'
 ))
 
@@ -2306,6 +2738,822 @@ fig_fft.update_layout(
 )
 
 fig_fft.show()
+
+
+
+
+
+
+
+
+
+
+#%%
+# Apply magnitude threshold
+threshold_factor=0.0005#0.0002
+magnitude_test = magnitude > threshold_factor*np.max(magnitude)
+
+# Create spherical mask to remove central region
+center = np.array(magnitude.shape) // 2
+R = 48#36  # Radius of sphere to mask out
+x, y, z = np.ogrid[:magnitude.shape[0], :magnitude.shape[1], :magnitude.shape[2]]
+sphere_mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 >= R**2
+
+# Apply both filters
+magnitude_test = magnitude_test & sphere_mask
+#h,k,l=-1,-1,-1
+h,k,l=0,1,0
+pixel_size=pixel_size
+
+# Have to do this because the tomogram is transposed with 
+# respect to the cellinfo_data defined in MATLAB
+tomogram_test=tomo_data.T
+magnitude_test=magnitude_test.T
+projection_test, rotated_tomo_test = project_and_plot_along_hkl(tomogram_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=False, q_vectors=None, pixel_size=None)
+projection_test_reciprocal, rotated_tomo_test_reciprocal = project_and_plot_along_hkl(magnitude_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
+
+#%%
+plot_hkl_vector_in_tomogram(tomogram_test, cellinfo_data, h, k, l, \
+    is_reciprocal=False, scale=0.1, plot_tomogram=True)
+plot_unit_cell_in_tomogram(tomogram_test, cellinfo_data, plot_tomogram=True, \
+    intensity_threshold=0.8, pixel_size=56)
+
+
+#%%
+fig,ax=plt.subplots(1,2,figsize=(12,5))
+ax[0].imshow(projection_test)
+ax[1].imshow(np.abs(np.fft.fftshift(np.fft.fft2(projection_test))),\
+    cmap='jet',norm=colors.LogNorm())
+plt.show()
+#%%
+plot_hkl_projection_grid(tomo_data.T, magnitude_test.T, \
+    cellinfo_data, pixel_size=None)
+
+#%%
+# -1,-1,-1
+start_x=4
+start_y=287
+end_x=28
+end_y=365
+start_x=0
+start_y=0
+end_x=0
+end_y=0
+line = plot_arbitrary_line_profile(projection_test, \
+    src=(start_x, start_y), dst=(end_x, end_y))
+
+
+#%%
+
+import matplotlib.pyplot as plt
+import numpy as np
+from ipywidgets import Button, VBox, HBox, IntText, Output
+from IPython.display import display
+%matplotlib widget
+
+class LineSelector:
+    def __init__(self, image, n_lines=6):
+        self.image = image
+        self.n_lines = n_lines
+        self.lines = []
+        self.current_points = []
+        self.fig, self.ax = plt.subplots(figsize=(8, 8))
+        self.out = Output()
+        self.done_button = Button(description="Done")
+        self.clear_button = Button(description="Clear Last Line")
+        self.n_lines_box = IntText(value=n_lines, description='Lines:')
+        self.done_button.on_click(self.finish)
+        self.clear_button.on_click(self.clear_last)
+        self.cid = self.fig.canvas.mpl_connect('button_press_event', self.onclick)
+        self.ax.imshow(self.image, cmap='gray')
+        self.ax.set_title(f"Click start and end for each line ({self.n_lines} total)")
+        display(VBox([HBox([self.done_button, self.clear_button, self.n_lines_box]), self.out]))
+        plt.show()
+        self.finished = False
+
+    def onclick(self, event):
+        if self.finished:
+            return
+        if event.inaxes != self.ax:
+            return
+        self.current_points.append((int(event.ydata), int(event.xdata)))  # (row, col)
+        if len(self.current_points) == 2:
+            self.lines.append(tuple(self.current_points))
+            y0, x0 = self.current_points[0]
+            y1, x1 = self.current_points[1]
+            self.ax.plot([x0, x1], [y0, y1], 'r-', linewidth=2)
+            self.ax.plot([x0, x1], [y0, y1], 'go')
+            self.fig.canvas.draw()
+            self.current_points = []
+            with self.out:
+                print(f"Line {len(self.lines)}: {self.lines[-1]}")
+            if len(self.lines) >= self.n_lines_box.value:
+                self.finish(None)
+
+    def finish(self, b):
+        self.finished = True
+        with self.out:
+            print("Selection finished.")
+            print("Lines:", self.lines)
+
+    def clear_last(self, b):
+        if self.lines:
+            self.lines.pop()
+            self.ax.clear()
+            self.ax.imshow(self.image, cmap='gray')
+            for (y0, x0), (y1, x1) in self.lines:
+                self.ax.plot([x0, x1], [y0, y1], 'r-', linewidth=2)
+                self.ax.plot([x0, x1], [y0, y1], 'go')
+            self.fig.canvas.draw()
+            with self.out:
+                print("Last line removed.")
+
+# Usage:
+selector = LineSelector(projection_test, n_lines=20)
+# After selection, your lines are in:
+#%%
+lines_points=selector.lines
+
+#%%
+lines=[]
+lines_bg_subtracted=[]
+num_lines=20
+for i in range(0,num_lines):
+    start_x=lines_points[i][0][0]
+    start_y=lines_points[i][0][1]
+    end_x=lines_points[i][1][0]
+    end_y=lines_points[i][1][1]
+    if i==num_lines-1 or i==0 or i==num_lines//2:
+        line3 = plot_arbitrary_line_profile(projection_test, \
+            src=(start_x, start_y), dst=(end_x, end_y), show_plot=True)
+        # Fit linear background
+        x = np.arange(len(line3))
+        coeffs = np.polyfit(x, line3, 1)
+        background = coeffs[0] * x + coeffs[1]
+        # Subtract background
+        line3_bg_subtracted = line3 - background
+        lines.append(line3)
+        lines_bg_subtracted.append(line3_bg_subtracted)
+    else:
+        line3 = plot_arbitrary_line_profile(projection_test, \
+            src=(start_x, start_y), dst=(end_x, end_y), show_plot=False)
+        # Fit linear background
+        x = np.arange(len(line3))
+        coeffs = np.polyfit(x, line3, 1)
+        background = coeffs[0] * x + coeffs[1]
+        # Subtract background
+        line3_bg_subtracted = line3 - background
+        lines.append(line3)
+        lines_bg_subtracted.append(line3_bg_subtracted)
+
+#%%
+plt.figure()
+fft_freqs_list=[]
+amplitude_list=[]
+phase_list=[]
+for i,line in enumerate(lines_bg_subtracted):
+    plt.plot(line)
+    fft_freqs, amplitude, phase = plot_1d_fft(line-np.mean(line), pixel_size=None, \
+        title="FFT of Line Profile", show_plot=False)
+    fft_freqs_list.append(fft_freqs)
+    amplitude_list.append(amplitude)
+    phase_list.append(phase)
+    print(amplitude.shape,fft_freqs.shape)
+plt.show()
+
+
+#%%
+plt.figure()
+for i in range(0,num_lines):
+    pos_mask = fft_freqs_list[i] >= 0
+    plt.plot(fft_freqs_list[i][pos_mask], amplitude_list[i][pos_mask], label='Amplitude')
+plt.legend()
+plt.show()
+
+
+
+
+
+
+
+
+
+
+#%%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.feature import match_template, peak_local_max
+from skimage.registration import phase_cross_correlation
+from scipy.ndimage import shift
+from skimage.draw import polygon
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from skimage.util import montage
+from scipy.ndimage import rotate
+from skimage.metrics import normalized_root_mse
+
+def square_unitcell_hexagons_template(size=32, hex_radius=10, spacing=2, center_dip=True, angle_deg=0):
+    """
+    Create a template with 4 hexagons arranged in a square unit cell.
+    - size: output image size (pixels)
+    - hex_radius: radius of each hexagon (pixels)
+    - spacing: gap between hexagons (pixels)
+    - center_dip: if True, add a central dip to each hexagon
+    - angle_deg: rotation of each hexagon
+    """
+    img = np.zeros((size, size))
+    # Calculate centers for 2x2 grid
+    offset = hex_radius + spacing//2
+    centers = [
+        (offset, offset),
+        (offset, size - offset),
+        (size - offset, offset),
+        (size - offset, size - offset)
+    ]
+    for cy, cx in centers:
+        hex_img = polygon_template(size=size, center_dip=center_dip, angle_deg=angle_deg, shape=6)
+        # Mask to only keep the hexagon at the right position
+        mask = np.zeros((size, size))
+        y, x = np.ogrid[:size, :size]
+        mask[((y-cy)**2 + (x-cx)**2) < hex_radius**2] = 1
+        img += hex_img * mask
+    img = np.clip(img, 0, 1)
+    return img
+def align_patches_to_reference(patches, upsample_factor=100):
+    reference = np.mean(patches, axis=0)
+    aligned_patches = []
+    for patch in patches:
+        shift_est, _, _ = phase_cross_correlation(reference, patch, upsample_factor=upsample_factor)
+        patch_aligned = shift(patch, shift_est)
+        aligned_patches.append(patch_aligned)
+    return aligned_patches
+
+def align_patch_by_rotation(patch, template, angles=np.arange(0, 360, 6)):
+    """Find best rotation of patch to match template."""
+    best_score = np.inf
+    best_angle = 0
+    best_rotated = patch.copy()
+
+    for angle in angles:
+        rotated = rotate(patch, angle, reshape=False, mode='reflect')
+        if rotated.shape != template.shape:
+            continue
+        score = normalized_root_mse(template, rotated)
+        if score < best_score:
+            best_score = score
+            best_angle = angle
+            best_rotated = rotated
+    return best_rotated, best_angle
+def extract_and_align_rotated_patches(image, coords, patch_size, template, rotation_scan=True):
+    half = patch_size // 2
+    aligned_patches = []
+    angles = []
+    for y, x in coords:
+        if y - half < 0 or y + half >= image.shape[0] or x - half < 0 or x + half >= image.shape[1]:
+            continue
+        if patch_size % 2 == 0:
+            patch = image[y - half:y + half, x - half:x + half]
+        else:
+            patch = image[y - half:y + half + 1, x - half:x + half + 1]
+        if patch.shape != template.shape:
+            continue
+        if rotation_scan:
+            patch, angle = align_patch_by_rotation(patch, template)
+            angles.append(angle)
+        else:
+            angles.append(0)
+        shift_est, _, _ = phase_cross_correlation(template, patch, upsample_factor=10)
+        patch_aligned = shift(patch, shift_est)
+        aligned_patches.append(patch_aligned)
+    return aligned_patches, angles
+def polygon_template(size=32, center_dip=False, angle_deg=0, shape=6, background_value=0.1, edge_blur_sigma=1.0, add_noise=False, noise_std=0.01, random_seed=None):
+    center = (size - 1) / 2
+    t = np.linspace(0, 2 * np.pi, shape + 1)
+    angle_rad = np.deg2rad(angle_deg)
+    x = center * np.cos(t + angle_rad) + center
+    y = center * np.sin(t + angle_rad) + center
+    rr, cc = polygon(y, x)
+    rr = np.clip(rr.astype(int), 0, size - 1)
+    cc = np.clip(cc.astype(int), 0, size - 1)
+    img = np.zeros((size, size))
+    hex_mask = np.zeros((size, size), dtype=bool)
+    hex_mask[rr, cc] = True
+    img[hex_mask] = 1.0
+    if center_dip:
+        yy, xx = np.meshgrid(np.arange(size), np.arange(size))
+        r = np.sqrt((yy - center)**2 + (xx - center)**2)
+        img[hex_mask] *= 1 - np.exp(-(r[hex_mask] / (0.35*size))**2)
+    # Optionally blur the edges (affects all, but we will restore background after)
+    if edge_blur_sigma > 0:
+        from scipy.ndimage import gaussian_filter
+        img = gaussian_filter(img, sigma=edge_blur_sigma)
+    # Set background value only outside the hexagon
+    img[~hex_mask] = background_value
+    # Optionally add noise
+    if add_noise:
+        if random_seed is not None:
+            np.random.seed(random_seed)
+        noise = np.random.randn(size, size) * noise_std
+        img[~hex_mask] += noise[~hex_mask]
+    return img
+
+def extract_aligned_patches(image, coords, patch_size, template):
+    half = patch_size // 2
+    patches = []
+    for y, x in coords:
+        if y - half < 0 or y + half >= image.shape[0] or x - half < 0 or x + half >= image.shape[1]:
+            continue
+        if patch_size % 2 == 0:
+            patch = image[y - half:y + half, x - half:x + half]
+        else:
+            patch = image[y - half:y + half + 1, x - half:x + half + 1]
+        if patch.shape != template.shape:
+            continue
+        shift_est, _, _ = phase_cross_correlation(template, patch, upsample_factor=10)
+        patch_aligned = shift(patch, shift_est)
+        patches.append(patch_aligned)
+    return patches
+
+def single_particle_analysis_rotation_scan(
+    image, patch_size=32, center_dip=True,
+    angle_range=np.arange(0, 60, 6), threshold_abs=0.6,
+    min_distance=None, score_thresh=0.5, show_plot=True,
+    cluster_k=None, show_gallery=True, shape=6,
+    cluster_by_angle_only=False,
+    random_seed=None
+):
+    if min_distance is None:
+        min_distance = patch_size // 2
+
+    best_coords = []
+    best_scores = []
+    best_angle = None
+    best_template = None
+    for angle in angle_range:
+        template = polygon_template(patch_size, center_dip=center_dip, angle_deg=angle, shape=shape,\
+            add_noise=True, noise_std=0.1, random_seed=random_seed)
+        result = match_template(image, template, pad_input=True)
+        coords = peak_local_max(result, min_distance=min_distance, threshold_abs=threshold_abs)
+        scores = result[coords[:, 0], coords[:, 1]]
+        if len(scores) > len(best_scores):
+            best_coords = coords
+            best_scores = scores
+            best_angle = angle
+            best_template = template
+
+    print(f"Best angle = {best_angle}°, {len(best_coords)} particles detected")
+
+    # Filter by correlation score
+    filtered_coords = best_coords[best_scores > score_thresh]
+    filtered_scores = best_scores[best_scores > score_thresh]
+    print(f"{len(filtered_coords)} particles kept after score filtering (>{score_thresh})")
+
+    # Align patches
+    patches, angles = extract_and_align_rotated_patches(image, filtered_coords, patch_size, best_template, rotation_scan=True)
+    if not patches:
+        print("No patches extracted.")
+        return None, filtered_coords, []
+
+    # Align all patches to the average BEFORE clustering
+    aligned_patches = align_patches_to_reference(patches, upsample_factor=100)
+    avg_particle = np.mean(aligned_patches, axis=0)
+
+    if show_plot:
+        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+        axs[0].imshow(best_template, cmap='gray')
+        axs[0].set_title(f"Best Template @ {best_angle}°")
+        axs[1].imshow(image, cmap='gray')
+        axs[1].plot(filtered_coords[:, 1], filtered_coords[:, 0], 'r.', markersize=3)
+        axs[1].set_title("Detected Particles")
+        axs[2].imshow(avg_particle, cmap='gray')
+        axs[2].set_title("Averaged Particle")
+        for ax in axs:
+            ax.axis('off')
+        plt.tight_layout()
+        plt.show()
+
+    if show_gallery:
+        plt.figure(figsize=(6, 6))
+        patch_stack = np.array(aligned_patches[:36])
+        gallery = montage(patch_stack, fill=0, grid_shape=(6, 6))
+        plt.imshow(gallery, cmap='gray')
+        plt.title("Top 36 Patches")
+        plt.axis('off')
+        plt.show()
+
+    if cluster_k is not None and cluster_k > 1:
+        angles_arr = np.array(angles).reshape(-1, 1) / 360.0  # Normalize angle to [0,1]
+        if cluster_by_angle_only:
+            features = angles_arr
+        else:
+            reshaped = np.array([p.flatten() for p in aligned_patches])
+            features = np.hstack([reshaped, angles_arr])  # Combine appearance and angle
+
+        pca = PCA(n_components=min(10, features.shape[1])) if not cluster_by_angle_only else None
+        reduced = pca.fit_transform(features) if pca is not None else features
+        labels = KMeans(n_clusters=cluster_k, random_state=0).fit_predict(reduced)
+        print(f"Patches clustered into {cluster_k} classes.")
+
+        mean_cluster_list=[]
+        for k in range(cluster_k):
+            cluster = [aligned_patches[i] for i in range(len(aligned_patches)) if labels[i] == k]
+            if cluster:
+                mean_cluster = np.mean(cluster, axis=0)
+                plt.figure()
+                plt.imshow(mean_cluster, cmap='gray')
+                plt.title(f"Class {k}")
+                plt.axis('off')
+                plt.show()
+            print("total particles in cluster: ", len(cluster))
+            mean_cluster_list.append(mean_cluster)
+
+        # # Overlay detected particles colored by cluster
+        # import matplotlib.cm as cm
+        # colors = cm.get_cmap('tab10', cluster_k)
+        # plt.figure(figsize=(6, 6))
+        # plt.imshow(image, cmap='gray')
+        # for k in range(cluster_k):
+        #     idxs = np.where(labels == k)[0]
+        #     if len(idxs) > 0:
+        #         plt.scatter(filtered_coords[idxs, 1], filtered_coords[idxs, 0],
+        #                     color=colors(k), label=f'Cluster {k}', s=20, alpha=0.8)
+        # plt.title('Detected Particles Colored by Cluster')
+        # plt.axis('off')
+        # plt.legend()
+        # plt.tight_layout()
+        # plt.show()
+
+        # plt.figure(figsize=(6, 6))
+        # for k in range(cluster_k):
+        #     idxs = np.where(labels == k)[0]
+        #     cluster_angles = np.array(angles)[idxs]
+        #     print(f"Cluster {k}: mean angle = {np.mean(cluster_angles):.2f}°, median = {np.median(cluster_angles):.2f}°")
+        #     plt.hist(cluster_angles, bins=12, alpha=0.5, label=f'Cluster {k}')
+        # plt.xlabel('Best matching angle (deg)')
+        # plt.ylabel('Count')
+        # plt.legend()
+        # plt.title('Distribution of best matching angles per cluster')
+        # plt.show()
+
+    return avg_particle, filtered_coords, aligned_patches, mean_cluster_list
+
+
+hkl_list=[(1,0,0),(0,1,0),(0,0,1)]
+cluster_k=2
+upsample_factor=4
+patch_size=11*upsample_factor+1
+clusters_hkl=[]
+for h,k,l in hkl_list:
+    pixel_size=pixel_size
+
+    # Have to do this because the tomogram is transposed with 
+    # respect to the cellinfo_data defined in MATLAB
+    tomogram_test=tomo_data.T
+    magnitude_test=magnitude_test.T
+    projection_test, rotated_tomo_test = project_and_plot_along_hkl(tomogram_test, cellinfo_data, h, k, l, \
+        title_prefix="test", is_reciprocal=False, q_vectors=None, pixel_size=None)
+    projection_test_reciprocal, rotated_tomo_test_reciprocal = project_and_plot_along_hkl(magnitude_test, cellinfo_data, h, k, l, \
+        title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
+
+    # --- UPSAMPLING STEP ---
+    from scipy.ndimage import zoom
+    projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+    print("projection_test_upsampled.shape: ", projection_test_upsampled.shape)
+    # fig,ax=plt.subplots(1,2,figsize=(10,5))
+    # ax[0].imshow(projection_test[100:375, 100:350], cmap='jet')
+    # ax[0].set_title("Original")
+    # ax[1].imshow(projection_test_upsampled, cmap='jet')
+    # ax[1].set_title("Upsampled")
+    # plt.tight_layout()
+    # plt.show()
+
+    avg, coords, patches, mean_cluster_list = single_particle_analysis_rotation_scan(
+        image=projection_test_upsampled,
+        patch_size=patch_size,
+        center_dip=True,
+        angle_range=np.arange(0, 60, 1),
+        threshold_abs=0.4,
+        score_thresh=0.5,
+        cluster_k=cluster_k,
+        show_gallery=False,
+        shape=6,  # Pentagon, 5; Hexagon, 6
+        cluster_by_angle_only=False,  # <--- Only use angle for clustering
+        random_seed=None
+    )
+
+
+    # fig,ax=plt.subplots(1,cluster_k,figsize=(10,10))
+    # for i,mean_cluster in enumerate(mean_cluster_list):
+    #     ax[i].imshow(mean_cluster-np.mean(mean_cluster), cmap='jet')
+    #     ax[i].axis('off')
+    # plt.tight_layout()
+    # plt.show()
+    
+    clusters_hkl.append(mean_cluster_list)
+
+clusters_hkl=np.array(clusters_hkl)
+
+
+
+
+fig,ax=plt.subplots(len(hkl_list),cluster_k,figsize=(10,10))
+
+for i in range(len(hkl_list)):
+    for j in range(cluster_k):
+        ax[i,j].imshow(clusters_hkl[i][j], cmap='jet')
+        ax[i,j].axis('off')
+    ax[i,0].set_title(f"hkl = {hkl_list[i]}")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
+#%%
+
+
+def max_rotational_correlation(img1, img2, angles=np.arange(0, 360, 1)):
+    best_corr = -1
+    best_angle = 0
+    for angle in angles:
+        rotated = rotate(img2, angle, reshape=False)
+        corr = np.corrcoef(img1.flatten(), rotated.flatten())[0, 1]
+        if corr > best_corr:
+            best_corr = corr
+            best_angle = angle
+    return best_corr, best_angle
+
+def max_positional_correlation(img1, img2, max_shift=10):
+    """Find best x,y shift to align img2 with img1"""
+    best_corr = -1
+    best_shift = (0,0)
+    
+    for dy in range(-max_shift, max_shift+1):
+        for dx in range(-max_shift, max_shift+1):
+            shifted = shift(img2, (dy,dx))
+            corr = np.corrcoef(img1.flatten(), shifted.flatten())[0,1]
+            if corr > best_corr:
+                best_corr = corr
+                best_shift = (dy,dx)
+                
+    return best_corr, best_shift
+
+# Example usage:
+img1 = clusters_hkl[0][1]
+img2 = clusters_hkl[1][0]
+img3 = clusters_hkl[2][1]
+
+# First align positions
+corr12_pos, shift12 = max_positional_correlation(img1, img2)
+corr13_pos, shift13 = max_positional_correlation(img1, img3)
+corr23_pos, shift23 = max_positional_correlation(img2, img3)
+
+# Shift images to align centers
+img2_shifted = shift(img2, shift12)
+img3_shifted = shift(img3, shift13)
+
+# Then find rotational alignment
+corr12, angle12 = max_rotational_correlation(img1, img2_shifted)
+corr13, angle13 = max_rotational_correlation(img1, img3_shifted)
+corr23, angle23 = max_rotational_correlation(img2_shifted, img3_shifted)
+
+fig,ax=plt.subplots(1,3,figsize=(10,10))
+ax[0].imshow(img1, cmap='jet')
+ax[0].axis('off')
+ax[1].imshow(img2, cmap='jet')
+ax[1].axis('off')
+ax[2].imshow(img3, cmap='jet')
+ax[2].axis('off')
+
+print(f"Image 1-2: Max correlation: {corr12:.3f} at angle {angle12}° and shift {shift12}")
+print(f"Image 1-3: Max correlation: {corr13:.3f} at angle {angle13}° and shift {shift13}")
+print(f"Image 2-3: Max correlation: {corr23:.3f} at angle {angle23}° and shift {shift23}")
+
+# Apply both position and rotation corrections
+img2_aligned = rotate(img2_shifted, angle12, reshape=False)
+img3_aligned = rotate(img3_shifted, angle13, reshape=False)
+
+# Create a new figure showing original and aligned images
+fig2, ax2 = plt.subplots(2, 3, figsize=(12, 8))
+plt.suptitle('Original vs Aligned Images')
+
+# First row - original images
+ax2[0,0].imshow(img1, cmap='jet')
+ax2[0,0].set_title('Image 1 (Reference)')
+ax2[0,0].axis('off')
+
+ax2[0,1].imshow(img2, cmap='jet')
+ax2[0,1].set_title('Image 2 (Original)')
+ax2[0,1].axis('off')
+
+ax2[0,2].imshow(img3, cmap='jet')
+ax2[0,2].set_title('Image 3 (Original)')
+ax2[0,2].axis('off')
+
+# Second row - reference and aligned images
+ax2[1,0].imshow(img1, cmap='jet')
+ax2[1,0].set_title('Image 1 (Reference)')
+ax2[1,0].axis('off')
+
+ax2[1,1].imshow(img2_aligned, cmap='jet')
+ax2[1,1].set_title(f'Image 2 (Shifted {shift12}, Rotated {angle12:.1f}°)')
+ax2[1,1].axis('off')
+
+ax2[1,2].imshow(img3_aligned, cmap='jet')
+ax2[1,2].set_title(f'Image 3 (Shifted {shift13}, Rotated {angle13:.1f}°)')
+ax2[1,2].axis('off')
+
+plt.tight_layout()
+plt.show()
+
+# Show sum of aligned images with background subtraction
+sum_aligned = img1 + img2_aligned + img3_aligned
+background = np.mean(sum_aligned)  # Calculate mean background
+sum_aligned_bg = sum_aligned - background  # Subtract background
+sum_aligned_bg[sum_aligned_bg<0]=0
+plt.figure(figsize=(6,6))
+plt.imshow(sum_aligned_bg, cmap='jet')
+plt.title('Sum of Aligned Images (Background Subtracted)')
+plt.colorbar()
+plt.axis('off')
+plt.show()
+
+#%%
+
+import numpy as np
+
+def pentagon_template_fit(shape, center, scale, angle_deg, amplitude=1.0, background=0.0):
+    # shape: (height, width) of output image
+    # center: (y, x) center of pentagon
+    # scale: size of pentagon (relative to image) 
+    # angle_deg: rotation angle in degrees
+    # amplitude: scaling factor
+    # background: offset
+    size = int(scale)
+    template = polygon_template(size=size, center_dip=True, angle_deg=angle_deg, shape=5)
+    # Place the template in a blank image at the specified center
+    img = np.ones(shape) * background
+    y0, x0 = int(center[0]), int(center[1])
+    half = size // 2
+    y1, y2 = max(0, y0-half), min(shape[0], y0+half)
+    x1, x2 = max(0, x0-half), min(shape[1], x0+half)
+    t_y1, t_y2 = half-(y0-y1), half+(y2-y0)
+    t_x1, t_x2 = half-(x0-x1), half+(x2-x0)
+    # Add the scaled template
+    img[y1:y2, x1:x2] += amplitude * template[t_y1:t_y2, t_x1:t_x2]
+    return img
+
+
+
+def hexagon_template_fit(shape, center, scale, angle_deg, amplitude=1.0, background=0.0):
+    # shape: (height, width) of output image
+    # center: (y, x) center of pentagon
+    # scale: size of pentagon (relative to image)
+    # angle_deg: rotation angle in degrees
+    # amplitude: scaling factor
+    # background: offset
+    size = int(scale)
+    template = polygon_template(size=size, center_dip=True, angle_deg=angle_deg, shape=6)
+    # Place the template in a blank image at the specified center
+    img = np.ones(shape) * background
+    y0, x0 = int(center[0]), int(center[1])
+    half = size // 2
+    y1, y2 = max(0, y0-half), min(shape[0], y0+half)
+    x1, x2 = max(0, x0-half), min(shape[1], x0+half)
+    t_y1, t_y2 = half-(y0-y1), half+(y2-y0)
+    t_x1, t_x2 = half-(x0-x1), half+(x2-x0)
+    # Add the scaled template
+    img[y1:y2, x1:x2] += amplitude * template[t_y1:t_y2, t_x1:t_x2]
+    return img
+
+def fit_objective(params, data):
+    center_y, center_x, scale, angle, amplitude, background = params
+    template_img = pentagon_template_fit(
+        data.shape, (center_y, center_x), scale, angle, amplitude, background
+    )
+    # Use sum of squared differences
+    return np.sum((data - template_img)**2)
+from scipy.optimize import minimize
+
+# Initial guess: center in the middle, scale ~image size/2, angle=0, amplitude=1, background=0
+init = [
+    sum_aligned_bg.shape[0] // 2 ,  # center_y
+    sum_aligned_bg.shape[1] // 2 ,  # center_x
+    45,  # scale
+    10,  # angle
+    np.max(sum_aligned_bg),  # amplitude
+    10   # background
+]
+
+bounds = [
+    (0, sum_aligned_bg.shape[0]),  # center_y
+    (0, sum_aligned_bg.shape[1]),  # center_x
+    (5, min(sum_aligned_bg.shape)),  # scale
+    (0, 360),  # angle
+    (0, None),  # amplitude
+    (0, None)  # background
+]
+
+result = minimize(fit_objective, init, args=(sum_aligned_bg,), bounds=bounds, method='L-BFGS-B')
+print("Fit result:", result)
+
+best_params = result.x
+fitted_template = hexagon_template_fit(
+    sum_aligned_bg.shape,
+    (best_params[0], best_params[1]),
+    best_params[2],
+    best_params[3],
+    best_params[4],
+    best_params[5]
+)
+
+import matplotlib.pyplot as plt
+plt.figure(figsize=(8,4))
+plt.subplot(1,2,1)
+plt.imshow(sum_aligned_bg, cmap='jet')
+plt.title('Data')
+plt.axis('off')
+plt.subplot(1,2,2)
+plt.imshow(fitted_template, cmap='jet')
+plt.title('Fitted Hexagon Template')
+plt.axis('off')
+plt.show()
+
+# Overlay
+plt.figure(figsize=(6,6))
+plt.imshow(sum_aligned_bg, cmap='jet', alpha=0.7)
+plt.imshow(fitted_template, cmap='gray', alpha=0.3)
+plt.title('Overlay: Data + Fitted Hexagon')
+plt.axis('off')
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+# Get selected cluster images and sum them
+test = sum_aligned_bg
+
+# Create a 3x3 grid of particles
+grid_size = (3, 3)
+grid_image = np.zeros((test.shape[0]*grid_size[0], test.shape[1]*grid_size[1]))
+
+# Fill the grid with the particle
+for i in range(grid_size[0]):
+    for j in range(grid_size[1]):
+        y_start = i * test.shape[0]
+        y_end = (i + 1) * test.shape[0]
+        x_start = j * test.shape[1]
+        x_end = (j + 1) * test.shape[1]
+        grid_image[y_start:y_end, x_start:x_end] = test
+
+plt.figure(figsize=(10,10))
+plt.imshow(grid_image, cmap='jet')
+plt.colorbar()  
+plt.title(f'{grid_size[0]}x{grid_size[1]} Grid of Summed Cluster Particles')
+plt.axis('off')
+plt.show()
+
+plt.figure(figsize=(10,10))
+plt.imshow(np.abs(np.fft.fftshift(np.fft.fft2(grid_image)))**2, cmap='jet', norm=colors.PowerNorm(gamma=0.25))
+plt.colorbar()  
+plt.title(f'{grid_size[0]}x{grid_size[1]} Grid of Summed Cluster Particles')
+plt.axis('off')
+plt.show()
+
 
 
 
