@@ -79,7 +79,7 @@ def main():
         lattice_spacing = 12
         radius = lattice_spacing/2
         lattice_type = 'FCC'
-        center_concentration = 0.6
+        center_concentration = 0.5
         
         dpsize = 256
         nsteps = 3
@@ -225,11 +225,12 @@ def main():
             # Plot results if enabled
             if total_plot:
                 plt.figure(figsize=(12,5))
+                plt.title('Total intensity')
                 plt.subplot(121)
-                plt.imshow(np.abs(cp.asnumpy(total_intensity)), cmap='jet')
+                plt.imshow(np.abs(cp.asnumpy(total_intensity)), norm=colors.LogNorm(), cmap='jet')
                 plt.colorbar()
                 plt.subplot(122)
-                plt.imshow(np.abs(cp.asnumpy(total_intensity_conv)), cmap='jet')
+                plt.imshow(np.abs(cp.asnumpy(total_intensity_conv)), norm=colors.LogNorm(), cmap='jet')
                 plt.colorbar()
                 plt.show()
 

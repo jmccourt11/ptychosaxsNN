@@ -13,6 +13,7 @@ import glob
 import scipy.io as sio
 import scipy.fft as spf
 from scipy.ndimage import generic_filter
+from tqdm import tqdm
 # Add parent directory to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '../')))
 import utils.ptychosaxsNN_utils as ptNN_U
@@ -1084,6 +1085,87 @@ class DiffractionAnalyzer:
         
         return indices
 
+    def calculate_wedge_integrated_intensities(self, num_wedges=8, use_deconvolved=False):
+        """
+        Calculate wedge integrated intensities for each diffraction pattern.
+        
+        Args:
+            num_wedges (int): Number of wedges to divide the pattern into.
+            use_deconvolved (bool): Whether to use deconvolved patterns instead of raw data.
+        
+        Returns:
+            list: List of integrated intensities for each wedge for each pattern.
+        """
+        data_to_use = self.deconvolved_patterns if use_deconvolved else self.dps
+        if data_to_use is None:
+            raise ValueError("No data available for wedge integration")
+
+        wedge_integrated_intensities = []
+        center = np.array(data_to_use[0].shape) // 2
+        for pattern in tqdm(data_to_use,desc='Calculating wedge integrated intensities'):
+            intensities = np.zeros(num_wedges)
+            for y in range(pattern.shape[0]):
+                for x in range(pattern.shape[1]):
+                    # Calculate angle and radius
+                    dy, dx = y - center[0], x - center[1]
+                    angle = np.arctan2(dy, dx) % (2 * np.pi)
+                    radius = np.sqrt(dx**2 + dy**2)
+                    # Determine which wedge this pixel belongs to
+                    wedge_index = int(angle / (2 * np.pi) * num_wedges)
+                    # Integrate intensity
+                    intensities[wedge_index] += pattern[y, x]
+            wedge_integrated_intensities.append(intensities)
+        return wedge_integrated_intensities
+
+    def plot_wedge_integrated_intensities(self, num_wedges=8, use_deconvolved=False, shift_y=0, shift_x=0, scale_factor=2.0, use_corrected_positions=False):
+        """
+        Plot wedge integrated intensities at the scan positions.
+        
+        Args:
+            num_wedges (int): Number of wedges to divide the pattern into.
+            use_deconvolved (bool): Whether to use deconvolved patterns instead of raw data.
+            shift_y (float): Vertical shift in projection pixels (28nm/pixel)
+            shift_x (float): Horizontal shift in projection pixels (28nm/pixel)
+            scale_factor (float): Factor to scale the size of displayed patterns (default: 2.0)
+            use_corrected_positions (bool): Whether to use corrected positions from ptychography reconstruction
+        """
+        if self.positions is None:
+            self.load_positions()
+
+        wedge_intensities = self.calculate_wedge_integrated_intensities(num_wedges=num_wedges, use_deconvolved=use_deconvolved)
+
+        # Convert shifts from pixels (28nm/pixel) to nm
+        shift_y_nm = shift_y * 28  # nm
+        shift_x_nm = shift_x * 28  # nm
+
+        # Always use original positions for displaying experimental data
+        shifted_positions_exp = self.positions.copy()
+        shifted_positions_exp[:, 1] += shift_y_nm  # Y1 position
+        shifted_positions_exp[:, 2] += shift_x_nm  # X position
+
+        # Create figure
+        fig, ax = plt.subplots(1, 1, figsize=(15, 15))
+
+        # Plot wedge integrated intensities at experimental positions
+        for idx, pos in enumerate(shifted_positions_exp):
+            if idx >= len(wedge_intensities):
+                break
+
+            # Calculate position for text
+            text_x = pos[2]
+            text_y = pos[1]
+
+            # Display integrated intensity values
+            intensity_text = "\n".join([f"Wedge {i}: {intensity:.2f}" for i, intensity in enumerate(wedge_intensities[idx])])
+            ax.text(text_x, text_y, intensity_text, fontsize=8, ha='center', va='center')
+
+        ax.set_title('Wedge Integrated Intensities')
+        ax.set_xlabel('X Position (nm)')
+        ax.set_ylabel('Y Position (nm)')
+        ax.axis('equal')
+        plt.tight_layout()
+        plt.show()
+
 #%%
 sample_dir='ZCB_9_3D_'
 base_directory='/scratch/2025_Feb/'
@@ -1250,7 +1332,7 @@ with h5py.File("/net/micdata/data2/12IDC/2025_Feb/results/ZCB_9_3D_/fly5065/data
 
 analyzer = DiffractionAnalyzer(
         base_path='/net/micdata/data2/12IDC/2025_Feb/ptycho/',
-        scan_number=5102,
+        scan_number=5065, #5102,
         dp_size=256,
         center_offset_y=center_offset_y,
         center_offset_x=center_offset_x
@@ -1261,6 +1343,7 @@ analyzer = DiffractionAnalyzer(
 # Load and process data
 analyzer.load_and_crop_data()
 #%%
+analyzer.load_model(model_path=model_path,gpu_index=None)
 # Make sure you're on GPU
 device = analyzer.model.device
 
@@ -1270,7 +1353,6 @@ end_event = torch.cuda.Event(enable_timing=True)
 
 # Start timing
 start_event.record()
-analyzer.load_model(model_path=model_path,gpu_index=1)
 analyzer.perform_deconvolution()
 # End timing
 end_event.record()
@@ -1284,9 +1366,176 @@ print(f"Elapsed time: {elapsed_time_ms:.3f} ms")
 #%%
 # Load probe
 analyzer.load_probe(pb1)
+#%%
 # analyzer.calculate_probe_radius(show_fit=True)
 analyzer.plot_scan_overlay(highlight_indices=[664,483,770],use_corrected_positions=False,use_deconvolved=False,scale_factor=2,show_probe_size=True,save_path=f"ZCB_9_3D_scan_overlay_original_{analyzer.scan_number}.pdf")
 analyzer.plot_scan_overlay(highlight_indices=[664,483,770],use_corrected_positions=False,use_deconvolved=True,scale_factor=2,show_probe_size=False,save_path=f"ZCB_9_3D_scan_overlay_deconvolved_{analyzer.scan_number}.pdf")
+
+#%%
+wedge_intensities=analyzer.calculate_wedge_integrated_intensities(num_wedges=24, use_deconvolved=True)
+wedge_intensities_raw=analyzer.calculate_wedge_integrated_intensities(num_wedges=24, use_deconvolved=False)
+#%%
+index=770
+print(wedge_intensities[index])
+print(wedge_intensities_raw[index])
+plt.plot(wedge_intensities[index]/np.max(wedge_intensities[index]),label='Deconvolved')
+plt.plot(wedge_intensities_raw[index]/np.max(wedge_intensities_raw[index]),label='Raw')
+plt.legend()
+plt.show()
+plt.figure()
+plt.subplot(1,2,1)
+plt.imshow(analyzer.deconvolved_patterns[index],norm=colors.LogNorm())
+plt.subplot(1,2,2)
+plt.imshow(analyzer.preprocessed_patterns[index],norm=colors.LogNorm())
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+#%%
+# Calculate wedge integrated intensities for all patterns
+center = np.array(analyzer.deconvolved_patterns[0].shape) // 2
+max_radius = min(center[0], center[1])-5
+
+num_wedges = 48
+pattern_index = 483#len(analyzer.deconvolved_patterns)
+
+pattern = analyzer.deconvolved_patterns[pattern_index]
+
+wedge_intensities=np.zeros(num_wedges)
+
+min_cutoff_factor=0.5
+for y in range(pattern.shape[0]):
+    for x in range(pattern.shape[1]):
+        dy, dx = y - center[0], x - center[1]
+        radius = np.sqrt(dx**2 + dy**2)
+        
+        if min_cutoff_factor*max_radius <= radius <= max_radius:
+            angle = np.arctan2(dy, dx) % (2 * np.pi)
+            wedge_idx = int(angle / (2 * np.pi) * num_wedges)
+            wedge_intensities[wedge_idx] += pattern[y, x]
+
+# Create figure
+fig = plt.figure(figsize=(12, 5))
+ax1 = fig.add_subplot(1, 3, 1)
+ax2 = fig.add_subplot(1, 3, 2)
+ax3 = fig.add_subplot(1, 3, 3)
+
+# Plot example diffraction pattern with wedges
+selected_pattern_idx = pattern_index  # Using the previously defined index
+im1 = ax1.imshow(analyzer.preprocessed_patterns[selected_pattern_idx])#, norm=colors.LogNorm())
+ax1.set_title('Example Preprocessed Pattern with Wedges', fontsize=18)
+im2 = ax2.imshow(analyzer.deconvolved_patterns[selected_pattern_idx])#, norm=colors.LogNorm())
+ax2.set_title('Example Deconvolved Pattern with Wedges', fontsize=18)
+
+# Draw wedge lines
+for i in range(num_wedges):
+    angle = i * 2 * np.pi / num_wedges
+    inner_x = center[1] + min_cutoff_factor*max_radius * np.cos(angle)
+    inner_y = center[0] + min_cutoff_factor*max_radius * np.sin(angle)
+    outer_x = center[1] + max_radius * np.cos(angle)
+    outer_y = center[0] + max_radius * np.sin(angle)
+    ax1.plot([inner_x, outer_x], [inner_y, outer_y], '--k', alpha=0.75, linewidth=1.5)
+    ax2.plot([inner_x, outer_x], [inner_y, outer_y], '--k', alpha=0.75, linewidth=1.5)
+
+# Draw circles
+inner_circle_ax1 = plt.Circle((center[1], center[0]), min_cutoff_factor*max_radius, fill=False, linestyle='--', color='black', alpha=0.5)
+outer_circle_ax1 = plt.Circle((center[1], center[0]), max_radius, fill=False, linestyle='--', color='black', alpha=0.5)
+ax1.add_patch(inner_circle_ax1)
+ax1.add_patch(outer_circle_ax1)
+
+inner_circle_ax2 = plt.Circle((center[1], center[0]), min_cutoff_factor*max_radius, fill=False, linestyle='--', color='black', alpha=0.5)
+outer_circle_ax2 = plt.Circle((center[1], center[0]), max_radius, fill=False, linestyle='--', color='black', alpha=0.5)
+ax2.add_patch(inner_circle_ax2)
+ax2.add_patch(outer_circle_ax2)
+
+# Increase tick label sizes
+ax1.tick_params(axis='both', which='major', labelsize=12)
+ax2.tick_params(axis='both', which='major', labelsize=12)
+
+print('PLOTTED')
+
+from scipy.optimize import curve_fit
+osc_freq=4
+# Define the fitting function
+def cos_fit(x, a0, a1, theta):
+    return a0 + a1 * np.cos(osc_freq * np.pi * x / num_wedges - theta)
+
+# Create x data points
+x = np.arange(num_wedges)
+
+# Normalize intensities
+norm_intensities = wedge_intensities/np.max(wedge_intensities)
+#norm_intensities_raw = intensities_raw/np.max(intensities_raw)
+
+# Fit the normalized intensities
+popt, _ = curve_fit(cos_fit, x, norm_intensities)
+#popt_raw, _ = curve_fit(cos_fit, x, norm_intensities_raw)
+
+# Generate fitted curves
+fit_curve = cos_fit(x, *popt)
+#fit_curve_raw = cos_fit(x, *popt_raw)
+
+# Plot integrated intensities and fits
+ax3.plot(x, norm_intensities, 'b.', label='Deconvolved Data')
+ax3.plot(x, fit_curve, 'b-', label=f'Deconvolved Fit\nθ={popt[2]:.2f}')
+ax3.plot(x, norm_intensities_raw, 'r.', label='Raw Data')
+#ax2.plot(x, fit_curve_raw, 'r-', label=f'Raw Fit\nθ={popt_raw[2]:.2f}')
+ax3.set_xlabel('Wedge Index', fontsize=14)
+ax3.set_ylabel('Normalized Integrated Intensity', fontsize=14)
+ax3.set_title('Wedge-Integrated Intensities with Cosine Fits', fontsize=14)
+ax3.tick_params(axis='both', which='major', labelsize=12)
+ax3.legend(fontsize=12)
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+#%%
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #%%
 for i in [664,483,769]:

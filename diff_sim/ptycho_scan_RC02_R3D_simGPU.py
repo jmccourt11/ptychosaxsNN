@@ -685,7 +685,6 @@ import matplotlib.patches as patches
 from tqdm import tqdm
 from scipy.ndimage import rotate
 from scipy.ndimage import zoom
-#%%
 # Setup GPU
 device = torch.device('cuda')
 
@@ -699,26 +698,6 @@ scan_number = 438#888
 #object_img = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly{scan_number:03d}/roi0_Ndp1280/MLc_L1_p10_g50_Ndp1280_mom0.5_pc0_noModelCon_bg0.1_vi_mm/Niter200.mat")['object'][:,:], dtype=torch.cfloat, device=device)
 object_img = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2025_Feb/results/ZC4_/fly{scan_number:03d}/roi1_Ndp512/MLc_L1_p10_g1000_Ndp256_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm//Niter2000.mat")['object'][:,:], dtype=torch.cfloat, device=device)
 
-# Random rotation angle between 0 and 360 degrees
-angle = random.uniform(0, 360)
-
-# Random zoom factor between 0.8 and 1.2
-zoom_factor = random.uniform(0.8, 1.2)
-
-# Convert to numpy for rotation and zoom
-object_np = object_img.cpu().numpy()
-
-# Apply zoom using scipy.ndimage.zoom
-zoomed = zoom(object_np, (zoom_factor, zoom_factor), order=1)
-
-# Apply rotation using scipy.ndimage.rotate
-rotated = rotate(zoomed, angle, reshape=False, order=1)
-
-# Convert back to torch tensor
-object_img = torch.tensor(rotated, dtype=torch.cfloat, device=device)
-print("Original object shape:", object_img.shape)
-
-
 scan_number=888
 # Load probe from file and move to GPU
 probe = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly{scan_number:03d}/roi0_Ndp1280/MLc_L1_p10_g50_Ndp1280_mom0.5_pc0_noModelCon_bg0.1_vi_mm/Niter200.mat")['probe'][:,:,0], dtype=torch.cfloat, device=device)
@@ -727,158 +706,244 @@ print("Probe shape:", probe.shape)
 #load the probe from the file
 probe_ideal = np.load('/home/beams0/PTYCHOSAXS/NN/probe_pinhole_bw0.2_wl1.24e-10_ps0.15_gs1280x1280.npy')
 probe_ideal = torch.tensor(probe_ideal, dtype=torch.cfloat, device=device)
+
+count=0
+num_sims=500
+while count<num_sims:
+    count+=1
+    # Random rotation angle between 0 and 360 degrees
+    angle = random.uniform(0, 360)
+
+    # Random zoom factor between 0.8 and 1.2
+    zoom_factor = random.uniform(0.5, 1.5)
+
+    # Convert to numpy for rotation and zoom
+    object_np = object_img.cpu().numpy()
+
+    # Apply zoom using scipy.ndimage.zoom
+    zoomed = zoom(object_np, (zoom_factor, zoom_factor), order=1)
+
+    # Apply rotation using scipy.ndimage.rotate
+    rotated = rotate(zoomed, angle, reshape=False, order=1)
+
+    # Convert back to torch tensor
+    object_img = torch.tensor(rotated, dtype=torch.cfloat, device=device)
+    print("Original object shape:", object_img.shape)
+            
+    # Pad object to match probe size
+    if object_img.shape[0] < probe.shape[0]:
+        # Calculate padding dimensions
+        pad_height = (2*probe.shape[0] - object_img.shape[0]) // 2
+        pad_width = (2*probe.shape[1] - object_img.shape[1]) // 2
         
+        # Create vignette for edges
+        y = torch.linspace(-1, 1, object_img.shape[0])
+        x = torch.linspace(-1, 1, object_img.shape[1])
+        X, Y = torch.meshgrid(x, y, indexing='xy')
+        R = torch.sqrt(X**2 + Y**2).to(device)
+        edge_vignette = (1 - R**2).clamp(0, 1)
+        
+        # Apply edge vignette
+        object_img = object_img * edge_vignette
+        
+        # Pad the object
+        object_img = torch.nn.functional.pad(object_img, 
+                                        (pad_width, pad_width, pad_height, pad_height),
+                                        mode='constant', value=0)
+        
+        # Create vignette for full padded object
+        y = torch.linspace(-1, 1, object_img.shape[0])
+        x = torch.linspace(-1, 1, object_img.shape[1])
+        X, Y = torch.meshgrid(x, y, indexing='xy')
+        R = torch.sqrt(X**2 + Y**2).to(device)
+        full_vignette = (1 - R**2).clamp(0, 1)
+        
+        # Apply full vignette
+        object_img = object_img * full_vignette
+        
+        print("Padded object shape:", object_img.shape)
 
 
-# Pad object to match probe size
-if object_img.shape[0] < probe.shape[0]:
-    # Calculate padding dimensions
-    pad_height = (2*probe.shape[0] - object_img.shape[0]) // 2
-    pad_width = (2*probe.shape[1] - object_img.shape[1]) // 2
+
+    # Define scan parameters
+    scan_step = probe.shape[0]//random.randint(6,36) # Step size between scan positions
+    patch_size = 128  # Size of patches to process at once
+    probe_size = probe.shape[0]
+
+    # Create a dictionary to store simulation parameters
+    sim_params = {
+        'scan_step': scan_step,
+        'patch_size': patch_size,
+        'probe_size': probe_size,
+        'angle': angle,
+        'zoom_factor': zoom_factor
+    }
+    print("sim_params", sim_params)
+
+    # Calculate scan positions
+    scan_positions = []
+    for y in range(0, object_img.shape[0]-probe_size+1, scan_step):
+        for x in range(0, object_img.shape[1]-probe_size+1, scan_step):
+            scan_positions.append([y, x])
+    scan_positions = torch.tensor(scan_positions, device=device)
+
+    # Initialize list to store result for each scan position
+    patterns = []
+    dps = []
+    dps_ideal = []
+    phase_diffs = []
+    phase_ideals = []
+    amps_diffs = []
+    amps_ideals = []
+    batch_size = 32  # Adjust as needed for your GPU
+
+    # Batch processing of scan positions
+    for i in tqdm(range(0, len(scan_positions), batch_size), desc="Batch scanning"):
+        batch = scan_positions[i:i+batch_size]
+        batch_size_actual = len(batch)
+        # Prepare tensor for object patches
+        object_patches = torch.zeros((batch_size_actual, probe_size, probe_size), dtype=torch.cfloat, device=device)
+        for j, pos in enumerate(batch):
+            y, x = pos
+            object_patches[j] = object_img[y:y+probe_size, x:x+probe_size]
+        # Multiply by probe (broadcasted)
+        # Create vignette for probe size
+        y = torch.linspace(-1, 1, probe_size)
+        x = torch.linspace(-1, 1, probe_size)
+        X, Y = torch.meshgrid(x, y, indexing='xy')
+        R = torch.sqrt(X**2 + Y**2).to(device)
+        probe_vignette = (1 - R**2).clamp(0, 1)
+        
+        # Apply vignette to both exit waves
+        exit_waves = object_patches * probe * probe_vignette  # shape: (batch_size, probe_size, probe_size)
+        exit_waves_ideal = object_patches*probe_vignette #* probe_ideal * probe_vignette
+        # FFT and intensity
+        dp = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(exit_waves, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
+        intensity = torch.abs(dp) ** 2  # shape: (batch_size, probe_size, probe_size)
+        dp_ideal = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(exit_waves_ideal, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
+        #dp_ideal = torch.fft.fft2(torch.fft.fftshift(exit_waves_ideal, dim=(-2, -1)), norm='ortho')
+        intensity_ideal = torch.abs(dp_ideal) ** 2  # shape: (batch_size, probe_size, probe_size)
+        
+        # Calculate amps and phase of diffraction patterns
+        amps_ideal = torch.abs(dp_ideal)
+        amps = torch.abs(dp)
+        phase_ideal = torch.angle(dp_ideal)
+        phase_diff = torch.angle(dp)
+        # Store results
+        patterns.extend(exit_waves.detach().cpu())
+        dps.extend(intensity.detach().cpu().numpy())
+        dps_ideal.extend(intensity_ideal.detach().cpu().numpy())
+        phase_diffs.extend(phase_diff.detach().cpu().numpy())
+        phase_ideals.extend(phase_ideal.detach().cpu().numpy())
+        amps_diffs.extend(amps.detach().cpu().numpy())
+        amps_ideals.extend(amps_ideal.detach().cpu().numpy())
+        
+    # # --- Plotting example ---
+    # if plot_example:
+    #     fig, ax = plt.subplots(2, 2, figsize=(10, 5))
+    #     im1=ax[0][0].imshow(np.sum(dps, axis=0), norm=colors.LogNorm(), cmap='jet')
+    #     im2=ax[0][1].imshow(np.sum(dps_ideal, axis=0), norm=colors.LogNorm(), cmap='jet')
+    #     ri = random.randint(0, len(dps)-1)
+    #     im3=ax[1][0].imshow(dps[ri], norm=colors.LogNorm(), cmap='jet')
+    #     im4=ax[1][1].imshow(dps_ideal[ri], norm=colors.LogNorm(), cmap='jet')
+    #     plt.colorbar(im1)
+    #     plt.colorbar(im2)
+    #     plt.colorbar(im3)
+    #     plt.colorbar(im4)
+    #     plt.show()
+
+
+
+
+    # # %%
+    def preprocess_dps(dp):
+        # Take log10 and normalize to 0-1 range
+        dp_log = np.log10(dp)
+        dp_norm = (dp_log - np.min(dp_log)) / (np.max(dp_log) - np.min(dp_log))
+        return dp_norm
+    # fig,ax=plt.subplots(3,2,figsize=(15,10))
+    # ri = random.randint(0, len(dps)-1)
+    # im1=ax[0][0].imshow(preprocess_dps(dps[ri]), cmap='jet')
+    # im2=ax[0][1].imshow(preprocess_dps(dps_ideal[ri]), cmap='jet')
+    # im3=ax[1][0].imshow(phase_diffs[ri][1280//2-512//2:1280//2+512//2,1280//2-512//2:1280//2+512//2], cmap='jet')
+    # im4=ax[1][1].imshow(phase_ideals[ri][1280// 2-512//2:1280//2+512//2,1280//2-512//2:1280//2+512//2], cmap='jet')
+    # im5=ax[2][0].imshow(amps_diffs[ri][1280//2-512//2:1280//2+512//2,1280//2-512//2:1280//2+512//2], cmap='jet',norm=colors.LogNorm())
+    # im6=ax[2][1].imshow(amps_ideals[ri][1280//2-512//2:1280//2+512//2,1280//2-512//2:1280//2+512//2], cmap='jet',norm=colors.LogNorm())
+    # plt.colorbar(im1)
+    # plt.colorbar(im2)
+    # plt.colorbar(im3)
+    # plt.colorbar(im4)
+    # plt.colorbar(im5)
+    # plt.colorbar(im6)
+    # plt.show()
+    # # %%
+
+
+
+
+    # Segment and plot summed diffraction patterns
+    segment_size = 256
+
+    # Sum up all diffraction patterns
+    summed_dp = np.sum(dps, axis=0)
+    summed_dp_ideal = np.sum(dps_ideal, axis=0)
+
+    # Create segments arrays
+    segments_dp = np.zeros((5, 5, segment_size, segment_size))
+    segments_dp_ideal = np.zeros((5, 5, segment_size, segment_size))
+    segments_dp_ideal_conv=np.zeros((5, 5, segment_size, segment_size))
+
+    # Segment the summed patterns
+    for i in tqdm(range(5)):
+        for j in range(5):
+            y_start = i * segment_size
+            y_end = (i + 1) * segment_size
+            x_start = j * segment_size 
+            x_end = (j + 1) * segment_size
+            segments_dp[i,j] = summed_dp[y_start:y_end, x_start:x_end]
+            segments_dp_ideal[i,j] = summed_dp_ideal[y_start:y_end, x_start:x_end]
+    # Plot segmented patterns and save them
+    dp_count = (count-1)*25
+    # for dp_name, segments in zip(['Segmented Summed DP', 'Segmented Summed Ideal DP'], 
+    #                         [segments_dp, segments_dp_ideal]):
+    #     fig, axes = plt.subplots(5, 5, figsize=(15, 15))
+    #     fig.suptitle(dp_name)
+    #     for i in range(5):
+    #         for j in range(5):
+    #             im = axes[i,j].imshow(preprocess_dps(segments[i,j]), cmap='jet')
+    #             plt.colorbar(im, ax=axes[i,j])
+    #             axes[i,j].axis('off')
+                
+    #             # Save each segment
+    #             dp_count += 1
+    #             segment_filename = f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/TEMP/output_hanning_conv_{dp_count:05d}.npz'
+    #             np.savez(segment_filename,
+    #                     pinholeDP=segments_dp_ideal[i,j],
+    #                     convDP=segments_dp[i,j])
+    #             print(f'saved: {segment_filename}')
+        
+    #    plt.tight_layout()
+    #    plt.show()
     
-    # Create vignette for edges
-    y = torch.linspace(-1, 1, object_img.shape[0])
-    x = torch.linspace(-1, 1, object_img.shape[1])
-    X, Y = torch.meshgrid(x, y, indexing='xy')
-    R = torch.sqrt(X**2 + Y**2).to(device)
-    edge_vignette = (1 - R**2).clamp(0, 1)
-    
-    # Apply edge vignette
-    object_img = object_img * edge_vignette
-    
-    # Pad the object
-    object_img = torch.nn.functional.pad(object_img, 
-                                    (pad_width, pad_width, pad_height, pad_height),
-                                    mode='constant', value=0)
-    
-    # Create vignette for full padded object
-    y = torch.linspace(-1, 1, object_img.shape[0])
-    x = torch.linspace(-1, 1, object_img.shape[1])
-    X, Y = torch.meshgrid(x, y, indexing='xy')
-    R = torch.sqrt(X**2 + Y**2).to(device)
-    full_vignette = (1 - R**2).clamp(0, 1)
-    
-    # Apply full vignette
-    object_img = object_img * full_vignette
-    
-    print("Padded object shape:", object_img.shape)
-
-
-
-# Define scan parameters
-scan_step = probe.shape[0]//random.randint(12,36) # Step size between scan positions
-patch_size = 128  # Size of patches to process at once
-probe_size = probe.shape[0]
-
-
-# Calculate scan positions
-scan_positions = []
-for y in range(0, object_img.shape[0]-probe_size+1, scan_step):
-    for x in range(0, object_img.shape[1]-probe_size+1, scan_step):
-        scan_positions.append([y, x])
-scan_positions = torch.tensor(scan_positions, device=device)
-
-# Initialize list to store result for each scan position
-patterns = []
-dps = []
-dps_ideal = []
-batch_size = 16  # Adjust as needed for your GPU
-
-# Batch processing of scan positions
-for i in tqdm(range(0, len(scan_positions), batch_size), desc="Batch scanning"):
-    batch = scan_positions[i:i+batch_size]
-    batch_size_actual = len(batch)
-    # Prepare tensor for object patches
-    object_patches = torch.zeros((batch_size_actual, probe_size, probe_size), dtype=torch.cfloat, device=device)
-    for j, pos in enumerate(batch):
-        y, x = pos
-        object_patches[j] = object_img[y:y+probe_size, x:x+probe_size]
-    # Multiply by probe (broadcasted)
-    # Create vignette for probe size
-    y = torch.linspace(-1, 1, probe_size)
-    x = torch.linspace(-1, 1, probe_size)
-    X, Y = torch.meshgrid(x, y, indexing='xy')
-    R = torch.sqrt(X**2 + Y**2).to(device)
-    probe_vignette = (1 - R**2).clamp(0, 1)
-    
-    # Apply vignette to both exit waves
-    exit_waves = object_patches * probe * probe_vignette  # shape: (batch_size, probe_size, probe_size)
-    exit_waves_ideal = object_patches * probe_ideal * probe_vignette
-    # FFT and intensity
-    dp = torch.fft.fftshift(torch.fft.fft2(exit_waves, norm='ortho'), dim=(-2, -1))
-    intensity = torch.abs(dp) ** 2  # shape: (batch_size, probe_size, probe_size)
-    #dp_ideal = torch.fft.fftshift(torch.fft.fft2(exit_waves_ideal, norm='ortho'), dim=(-2, -1))
-    dp_ideal = torch.fft.fft2(exit_waves_ideal, norm='ortho')
-    intensity_ideal = torch.abs(dp_ideal) ** 2  # shape: (batch_size, probe_size, probe_size)
-    # Store results
-    patterns.extend(exit_waves.detach().cpu())
-    dps.extend(intensity.detach().cpu().numpy())
-    dps_ideal.extend(intensity_ideal.detach().cpu().numpy())
-
-# --- Plotting example ---
-fig, ax = plt.subplots(2, 2, figsize=(10, 5))
-im1=ax[0][0].imshow(np.sum(dps, axis=0), norm=colors.LogNorm(), cmap='jet')
-im2=ax[0][1].imshow(np.sum(dps_ideal, axis=0), norm=colors.LogNorm(), cmap='jet')
-ri = random.randint(0, len(dps)-1)
-im3=ax[1][0].imshow(dps[ri], norm=colors.LogNorm(), cmap='jet')
-im4=ax[1][1].imshow(dps_ideal[ri], norm=colors.LogNorm(), cmap='jet')
-plt.colorbar(im1)
-plt.colorbar(im2)
-plt.colorbar(im3)
-plt.colorbar(im4)
-plt.show()
-
-
-
-
-# %%
-def preprocess_dps(dp):
-    # Take log10 and normalize to 0-1 range
-    dp_log = np.log10(dp)
-    dp_norm = (dp_log - np.min(dp_log)) / (np.max(dp_log) - np.min(dp_log))
-    return dp_norm
-fig,ax=plt.subplots(1,2,figsize=(10,5))
-ri = random.randint(0, len(dps)-1)
-im1=ax[0].imshow(preprocess_dps(dps[ri]), cmap='jet')
-im2=ax[1].imshow(preprocess_dps(dps_ideal[ri]), cmap='jet')
-plt.colorbar(im1)
-plt.colorbar(im2)
-plt.show()
-# %%
-
-
-
-
-# Segment and plot summed diffraction patterns
-segment_size = 256
-
-# Sum up all diffraction patterns
-summed_dp = np.sum(dps, axis=0)
-summed_dp_ideal = np.sum(dps_ideal, axis=0)
-
-# Create segments arrays
-segments_dp = np.zeros((5, 5, segment_size, segment_size))
-segments_dp_ideal = np.zeros((5, 5, segment_size, segment_size))
-
-# Segment the summed patterns
-for i in range(5):
-    for j in range(5):
-        y_start = i * segment_size
-        y_end = (i + 1) * segment_size
-        x_start = j * segment_size 
-        x_end = (j + 1) * segment_size
-        segments_dp[i,j] = summed_dp[y_start:y_end, x_start:x_end]
-        segments_dp_ideal[i,j] = summed_dp_ideal[y_start:y_end, x_start:x_end]
-
-# Plot segmented patterns
-for dp_name, segments in zip(['Segmented Summed DP', 'Segmented Summed Ideal DP'], 
-                           [segments_dp, segments_dp_ideal]):
-    fig, axes = plt.subplots(5, 5, figsize=(15, 15))
-    fig.suptitle(dp_name)
     for i in range(5):
         for j in range(5):
-            im = axes[i,j].imshow(preprocess_dps(segments[i,j]), cmap='jet')
-            plt.colorbar(im, ax=axes[i,j])
-            axes[i,j].axis('off')
-    plt.tight_layout()
-    plt.show()
+            # Save each segment
+            dp_count += 1
+            segment_filename = f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/TEMP/output_hanning_conv_{dp_count:05d}.npz'
+            np.savez(segment_filename,
+                    pinholeDP=segments_dp_ideal[i,j],
+                    convDP=segments_dp[i,j])
+            print(f'saved: {segment_filename}')
+
+
+# %%
+ri=random.randint(1,25*num_sims)
+t1=np.load(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/TEMP/output_hanning_conv_{ri:05d}.npz')['convDP']
+t2=np.load(f'/net/micdata/data2/12IDC/ptychosaxs/data/diff_sim/TEMP/output_hanning_conv_{ri:05d}.npz')['pinholeDP']
+fig,ax=plt.subplots(1,2,figsize=(10,5))
+im1=ax[0].imshow(t1,cmap='jet')
+im2=ax[1].imshow(t2,cmap='jet')
+plt.colorbar(im1)
+plt.colorbar(im2)
+plt.show()
+# %%

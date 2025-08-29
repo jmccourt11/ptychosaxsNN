@@ -22,6 +22,7 @@ from skimage.measure import profile_line
 from matplotlib import colors
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from scipy.ndimage import zoom
 #%%
 def create_hsv_colorscale(n_colors=100):
     colors = []
@@ -2534,11 +2535,13 @@ def plot_combined_reciprocal_space(tomo_data, tomo_data_RS, tomo_data_RS_qs, cel
 
 #tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_56nm.tiff"
 #tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/tomogram_alignment_recon_28nm.tiff"
-tomogram = "/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/180_projections_tomogram_alignment_recon_28nm.tiff"  
+#tomogram = "/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/180_projections_tomogram_alignment_recon_28nm.tiff"  
 #tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_8_3D_/tomogram_alignment_recon_56nm.tiff"
 
-tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_3D_/tomogram_alignment_recon_28nm.tif"
+#tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_3D_/tomogram_alignment_recon_28nm.tif"
 #tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZC4_/new_tomogram_alignment_recon_56nm.tiff"
+tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_4_3D_/tomogram_alignment_recon_28nm.tiff"
+tomogram="/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_10_3D_/tomogram_alignment_recon_28nm.tiff"
 tomo_data = tifffile.imread(tomogram)
 # Get current shape
 shape = tomo_data.shape
@@ -2661,9 +2664,12 @@ fig_fft.update_layout(
 # Load and plot cell info
 #cellinfo_data = load_cellinfo_data("/net/micdata/data2/12IDC/2025_Feb/misc/ZCB_9_3D_/cellinfo.mat")
 #cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_9.mat")
+#cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_4.mat")
+cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_10.mat")
 #cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZCB_8.mat")
-cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZC4.mat")
+#cellinfo_data = load_cellinfo_data("/home/beams/PTYCHOSAXS/cellinfo_ZC4.mat")
 #cellinfo_data = load_cellinfo_data("cellinfo_256_BL.mat")
+
 # hs=np.array([1,1,0,0,-1,-1,0,0,1,-1,1,-1])
 # ks=np.array([1,-1,1,1,-1,1,-1,-1,0,0,0,0])
 # ls=np.array([0,0,1,-1,0,0,-1,1,0,1,-1,-1])
@@ -2762,7 +2768,7 @@ sphere_mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 >= R*
 # Apply both filters
 magnitude_test = magnitude_test & sphere_mask
 #h,k,l=-1,-1,-1
-h,k,l=0,1,0
+h,k,l=-1,0,-1
 pixel_size=pixel_size
 
 # Have to do this because the tomogram is transposed with 
@@ -2811,7 +2817,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ipywidgets import Button, VBox, HBox, IntText, Output
 from IPython.display import display
-%matplotlib widget
+#%matplotlib widget
 
 class LineSelector:
     def __init__(self, image, n_lines=6):
@@ -3061,7 +3067,7 @@ def polygon_template(size=32, center_dip=False, angle_deg=0, shape=6, background
     if center_dip:
         yy, xx = np.meshgrid(np.arange(size), np.arange(size))
         r = np.sqrt((yy - center)**2 + (xx - center)**2)
-        img[hex_mask] *= 1 - np.exp(-(r[hex_mask] / (0.35*size))**2)
+        img[hex_mask] *= 1 - np.exp(-(r[hex_mask] / (0.3*size))**2)
     # Optionally blur the edges (affects all, but we will restore background after)
     if edge_blur_sigma > 0:
         from scipy.ndimage import gaussian_filter
@@ -3099,7 +3105,8 @@ def single_particle_analysis_rotation_scan(
     min_distance=None, score_thresh=0.5, show_plot=True,
     cluster_k=None, show_gallery=True, shape=6,
     cluster_by_angle_only=False,
-    random_seed=None
+    random_seed=None,
+    reference_template=None  # <-- new argument
 ):
     if min_distance is None:
         min_distance = patch_size // 2
@@ -3108,17 +3115,37 @@ def single_particle_analysis_rotation_scan(
     best_scores = []
     best_angle = None
     best_template = None
-    for angle in angle_range:
-        template = polygon_template(patch_size, center_dip=center_dip, angle_deg=angle, shape=shape,\
-            add_noise=True, noise_std=0.1, random_seed=random_seed)
-        result = match_template(image, template, pad_input=True)
-        coords = peak_local_max(result, min_distance=min_distance, threshold_abs=threshold_abs)
-        scores = result[coords[:, 0], coords[:, 1]]
-        if len(scores) > len(best_scores):
-            best_coords = coords
-            best_scores = scores
-            best_angle = angle
-            best_template = template
+    if reference_template is not None:
+        # Use the provided reference template for all angles
+        best_template = reference_template
+        best_scores = []
+        best_coords = []
+        best_angle = 0
+        
+        # Try different rotations of the template
+        for angle in angle_range:
+            rotated_template = rotate_patch(reference_template, angle)
+            result = match_template(image, rotated_template, pad_input=True)
+            coords = peak_local_max(result, min_distance=min_distance, threshold_abs=threshold_abs)
+            scores = result[coords[:, 0], coords[:, 1]]
+            
+            if len(scores) > len(best_scores):
+                best_coords = coords
+                best_scores = scores 
+                best_angle = angle
+                best_template = rotated_template
+    else:
+        for angle in angle_range:
+            template = polygon_template(patch_size, center_dip=center_dip, angle_deg=angle, shape=shape,\
+                add_noise=True, noise_std=0.05, random_seed=random_seed)
+            result = match_template(image, template, pad_input=True)
+            coords = peak_local_max(result, min_distance=min_distance, threshold_abs=threshold_abs)
+            scores = result[coords[:, 0], coords[:, 1]]
+            if len(scores) > len(best_scores):
+                best_coords = coords
+                best_scores = scores
+                best_angle = angle
+                best_template = template
 
     print(f"Best angle = {best_angle}°, {len(best_coords)} particles detected")
 
@@ -3160,7 +3187,7 @@ def single_particle_analysis_rotation_scan(
         plt.axis('off')
         plt.show()
 
-    if cluster_k is not None and cluster_k > 1:
+    if cluster_k is not None and cluster_k >= 1:
         angles_arr = np.array(angles).reshape(-1, 1) / 360.0  # Normalize angle to [0,1]
         if cluster_by_angle_only:
             features = angles_arr
@@ -3174,54 +3201,176 @@ def single_particle_analysis_rotation_scan(
         print(f"Patches clustered into {cluster_k} classes.")
 
         mean_cluster_list=[]
+        if cluster_k>1:
+            for k in range(cluster_k):
+                cluster = [aligned_patches[i] for i in range(len(aligned_patches)) if labels[i] == k]
+                if cluster:
+                    mean_cluster = np.mean(cluster, axis=0)
+                    plt.figure()
+                    plt.imshow(mean_cluster, cmap='gray')
+                    plt.title(f"Class {k}")
+                    plt.axis('off')
+                    plt.show()
+                print("total particles in cluster: ", len(cluster))
+                mean_cluster_list.append(mean_cluster)
+        else:
+            print("only one cluster, using average of all patches")
+            mean_cluster_list.append(np.mean(aligned_patches, axis=0))
+
+        # Overlay detected particles colored by cluster
+        import matplotlib.cm as cm
+        colors = cm.get_cmap('tab10', cluster_k)
+        plt.figure(figsize=(6, 6))
+        plt.imshow(image, cmap='gray')
         for k in range(cluster_k):
-            cluster = [aligned_patches[i] for i in range(len(aligned_patches)) if labels[i] == k]
-            if cluster:
-                mean_cluster = np.mean(cluster, axis=0)
-                plt.figure()
-                plt.imshow(mean_cluster, cmap='gray')
-                plt.title(f"Class {k}")
-                plt.axis('off')
-                plt.show()
-            print("total particles in cluster: ", len(cluster))
-            mean_cluster_list.append(mean_cluster)
+            idxs = np.where(labels == k)[0]
+            if len(idxs) > 0:
+                plt.scatter(filtered_coords[idxs, 1], filtered_coords[idxs, 0],
+                            color=colors(k), label=f'Cluster {k}', s=20, alpha=0.8)
+        plt.title('Detected Particles Colored by Cluster')
+        plt.axis('off')
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
 
-        # # Overlay detected particles colored by cluster
-        # import matplotlib.cm as cm
-        # colors = cm.get_cmap('tab10', cluster_k)
-        # plt.figure(figsize=(6, 6))
-        # plt.imshow(image, cmap='gray')
-        # for k in range(cluster_k):
-        #     idxs = np.where(labels == k)[0]
-        #     if len(idxs) > 0:
-        #         plt.scatter(filtered_coords[idxs, 1], filtered_coords[idxs, 0],
-        #                     color=colors(k), label=f'Cluster {k}', s=20, alpha=0.8)
-        # plt.title('Detected Particles Colored by Cluster')
-        # plt.axis('off')
-        # plt.legend()
-        # plt.tight_layout()
-        # plt.show()
-
-        # plt.figure(figsize=(6, 6))
-        # for k in range(cluster_k):
-        #     idxs = np.where(labels == k)[0]
-        #     cluster_angles = np.array(angles)[idxs]
-        #     print(f"Cluster {k}: mean angle = {np.mean(cluster_angles):.2f}°, median = {np.median(cluster_angles):.2f}°")
-        #     plt.hist(cluster_angles, bins=12, alpha=0.5, label=f'Cluster {k}')
-        # plt.xlabel('Best matching angle (deg)')
-        # plt.ylabel('Count')
-        # plt.legend()
-        # plt.title('Distribution of best matching angles per cluster')
-        # plt.show()
+        plt.figure(figsize=(6, 6))
+        for k in range(cluster_k):
+            idxs = np.where(labels == k)[0]
+            cluster_angles = np.array(angles)[idxs]
+            print(f"Cluster {k}: mean angle = {np.mean(cluster_angles):.2f}°, median = {np.median(cluster_angles):.2f}°")
+            plt.hist(cluster_angles, bins=12, alpha=0.5, label=f'Cluster {k}')
+        plt.xlabel('Best matching angle (deg)')
+        plt.ylabel('Count')
+        plt.legend()
+        plt.title('Distribution of best matching angles per cluster')
+        plt.show()
 
     return avg_particle, filtered_coords, aligned_patches, mean_cluster_list
 
+def crop_patch(image, center, patch_size):
+    """
+    Crop a square patch from the image centered at 'center' (y, x) with size 'patch_size'.
+    Pads with zeros if the patch is at the edge.
+    """
+    y, x = center
+    half = patch_size // 2
+    y1, y2 = max(0, y - half), min(image.shape[0], y + half + 1)
+    x1, x2 = max(0, x - half), min(image.shape[1], x + half + 1)
+    patch = image[y1:y2, x1:x2]
+    # Pad if at the edge
+    pad_y = patch_size - patch.shape[0]
+    pad_x = patch_size - patch.shape[1]
+    if pad_y > 0 or pad_x > 0:
+        patch = np.pad(patch, ((0, pad_y), (0, pad_x)), mode='constant')
+    # Plot the patch location on the original image
+    plt.figure(figsize=(12,6))
+    
+    # Original image with patch location
+    plt.subplot(121)
+    plt.imshow(image, cmap='gray')
+    
+    # Draw red square at patch location
+    half = patch_size // 2
+    rect = plt.Rectangle((x-half, y-half), patch_size, patch_size, 
+                        fill=False, color='red', linewidth=2)
+    plt.gca().add_patch(rect)
+    plt.title('Selected Patch Location')
+    plt.axis('off')
+    
+    # Plot extracted patch
+    plt.subplot(122)
+    plt.imshow(patch, cmap='gray')
+    plt.title('Extracted Patch')
+    plt.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    return patch
+
+
+def select_patch_interactive(image, patch_size=33):
+    """
+    Allows the user to select the center of a patch interactively from an image.
+    Returns the cropped patch and the center coordinates.
+    """
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(8,8))
+    plt.imshow(image, cmap='gray')
+    plt.title(f"Click to select the center of the reference patch (size={patch_size})")
+    coords = plt.ginput(1)
+    plt.close()
+    if not coords:
+        print("No point selected.")
+        return None, None
+    x, y = int(coords[0][0]), int(coords[0][1])
+    patch = crop_patch(image, (y, x), patch_size)
+    return patch, (y, x)
+
+
+def rotate_patch(patch, angle):
+    """
+    Rotate a patch by a given angle (degrees), keeping the same shape.
+    """
+    from scipy.ndimage import rotate
+    return rotate(patch, angle, reshape=False, mode='reflect')
 
 hkl_list=[(1,0,0),(0,1,0),(0,0,1)]
-cluster_k=2
+hkl_list=[(-1,0,-1),(1,0,1)]
+cluster_k=4
 upsample_factor=4
 patch_size=11*upsample_factor+1
+
+#%%
+#need to select the patch manually, requires upsampled projection
+#(100) patch
+h,k,l=hkl_list[0]
+projection_test, rotated_tomo_test = project_and_plot_along_hkl(tomogram_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=False, q_vectors=None, pixel_size=None)
+projection_test_reciprocal, rotated_tomo_test_reciprocal = project_and_plot_along_hkl(magnitude_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
+
+# # --- UPSAMPLING STEP ---
+# #ZC4
+# projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+# reference_patch_ZC4_100 = crop_patch(projection_test_upsampled, (607,551), patch_size)
+
+#ZCB9
+projection_test_upsampled = zoom(projection_test, upsample_factor, order=3)
+reference_patch_ZCB9_1bar01bar = crop_patch(projection_test_upsampled, (1106,1126), patch_size)
+
+#%%
+#(010) patch
+h,k,l=hkl_list[1]
+projection_test, rotated_tomo_test = project_and_plot_along_hkl(tomogram_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=False, q_vectors=None, pixel_size=None)
+projection_test_reciprocal, rotated_tomo_test_reciprocal = project_and_plot_along_hkl(magnitude_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
+
+# # --- UPSAMPLING STEP ---
+# #ZC4
+# projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+# reference_patch_ZC4_010 = crop_patch(projection_test_upsampled, (531,611), patch_size)
+
+#ZCB9
+projection_test_upsampled = zoom(projection_test, upsample_factor, order=3)
+reference_patch_ZCB9_101 = crop_patch(projection_test_upsampled, (917,1127), patch_size)
+
+#%%
+#(001) patch
+h,k,l=hkl_list[2]
+projection_test, rotated_tomo_test = project_and_plot_along_hkl(tomogram_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=False, q_vectors=None, pixel_size=None)
+projection_test_reciprocal, rotated_tomo_test_reciprocal = project_and_plot_along_hkl(magnitude_test, cellinfo_data, h, k, l, \
+    title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
+
+# --- UPSAMPLING STEP ---
+projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+reference_patch_ZC4_001 = crop_patch(projection_test_upsampled, (537,542), patch_size)
+
+#%%
+
 clusters_hkl=[]
+
 for h,k,l in hkl_list:
     pixel_size=pixel_size
 
@@ -3235,16 +3384,29 @@ for h,k,l in hkl_list:
         title_prefix="test", is_reciprocal=True, q_vectors=None, pixel_size=None)
 
     # --- UPSAMPLING STEP ---
-    from scipy.ndimage import zoom
-    projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+    # projection_test_upsampled = zoom(projection_test[100:375, 100:350], upsample_factor, order=3)
+    projection_test_upsampled = zoom(projection_test, upsample_factor, order=3)
     print("projection_test_upsampled.shape: ", projection_test_upsampled.shape)
-    # fig,ax=plt.subplots(1,2,figsize=(10,5))
-    # ax[0].imshow(projection_test[100:375, 100:350], cmap='jet')
-    # ax[0].set_title("Original")
-    # ax[1].imshow(projection_test_upsampled, cmap='jet')
-    # ax[1].set_title("Upsampled")
-    # plt.tight_layout()
-    # plt.show()
+    fig,ax=plt.subplots(1,2,figsize=(10,5))
+    #ax[0].imshow(projection_test[100:375, 100:350], cmap='jet')
+    ax[0].imshow(projection_test, cmap='jet')
+    ax[0].set_title("Original")
+    ax[1].imshow(projection_test_upsampled, cmap='jet')
+    ax[1].set_title("Upsampled")
+    plt.tight_layout()
+    plt.show()
+
+    # if h==1:
+    #     reference_patch = reference_patch_ZC4_100
+    # elif k==1:
+    #     reference_patch = reference_patch_ZC4_010
+    # elif l==1:
+    #     reference_patch = reference_patch_ZC4_001
+
+    if h==1 and k==0 and l==1:
+        reference_patch = reference_patch_ZCB9_101
+    else:
+        reference_patch = reference_patch_ZCB9_1bar01bar
 
     avg, coords, patches, mean_cluster_list = single_particle_analysis_rotation_scan(
         image=projection_test_upsampled,
@@ -3254,10 +3416,11 @@ for h,k,l in hkl_list:
         threshold_abs=0.4,
         score_thresh=0.5,
         cluster_k=cluster_k,
-        show_gallery=False,
+        show_gallery=True,
         shape=6,  # Pentagon, 5; Hexagon, 6
         cluster_by_angle_only=False,  # <--- Only use angle for clustering
-        random_seed=None
+        random_seed=None,
+        reference_template=reference_patch  # <-- new argument
     )
 
 
@@ -3273,17 +3436,30 @@ for h,k,l in hkl_list:
 clusters_hkl=np.array(clusters_hkl)
 
 
+#%%
 
 
-fig,ax=plt.subplots(len(hkl_list),cluster_k,figsize=(10,10))
+if cluster_k>1:
+    fig,ax=plt.subplots(len(hkl_list),cluster_k,figsize=(10,10))
+    for i in range(len(hkl_list)):
+        for j in range(cluster_k):
+            im1=ax[i,j].imshow(clusters_hkl[i][j], cmap='jet')
+            ax[i,j].axis('off')
+            ax[i,0].set_title(f"hkl = {hkl_list[i]}")
+            plt.colorbar(im1)
+    plt.tight_layout()
+    plt.show()
+else:
+    fig,ax=plt.subplots(len(hkl_list),1,figsize=(10,10))
+    for i in range(len(hkl_list)):
+        im1=ax[i].imshow(clusters_hkl[i][0], cmap='jet')#,norm=colors.PowerNorm(gamma=10.0))
+        ax[i].axis('off')
+        ax[i].set_title(f"hkl = {hkl_list[i]}")
+        plt.colorbar(im1)
+    plt.tight_layout()
 
-for i in range(len(hkl_list)):
-    for j in range(cluster_k):
-        ax[i,j].imshow(clusters_hkl[i][j], cmap='jet')
-        ax[i,j].axis('off')
-    ax[i,0].set_title(f"hkl = {hkl_list[i]}")
-plt.tight_layout()
-plt.show()
+    plt.show()
+
 
 
 
@@ -3324,9 +3500,9 @@ def max_positional_correlation(img1, img2, max_shift=10):
     return best_corr, best_shift
 
 # Example usage:
-img1 = clusters_hkl[0][1]
+img1 = clusters_hkl[0][0]
 img2 = clusters_hkl[1][0]
-img3 = clusters_hkl[2][1]
+img3 = clusters_hkl[2][0]
 
 # First align positions
 corr12_pos, shift12 = max_positional_correlation(img1, img2)
