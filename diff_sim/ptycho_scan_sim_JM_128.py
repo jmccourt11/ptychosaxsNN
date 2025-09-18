@@ -20,8 +20,8 @@ probe = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC0
 # Resize probe in fourier space
 probe_FFT = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(probe, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
 
-# Create padded array of target size (256x256)
-target_size = 256
+# Create padded array of target size (128x128)
+target_size = 128
 pad_size = (target_size - probe_FFT.shape[0]) // 2
 padded_FFT = torch.zeros((target_size, target_size), dtype=torch.cfloat, device=device)
 padded_FFT[pad_size:pad_size+probe_FFT.shape[0], pad_size:pad_size+probe_FFT.shape[1]] = probe_FFT
@@ -39,14 +39,12 @@ probe_resized = probe_resized * (1 - R**2).clamp(0, 1)
 probe_resized_FFT = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(probe_resized, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
 
 # Load probe from file and move to GPU
-# probe_256x256 = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly888/roi0_Ndp512/MLc_L1_p10_g50_Ndp256_mom0.5_pc0_noModelCon_bg0.1_vi_mm/Niter1000.mat")['probe'][:,:,0], dtype=torch.cfloat, device=device)
-probe_256x256 = probe_resized
+probe_128x128 = probe_resized
 
 # Load and pad the lattice
 #lattice = np.load('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/lattice_ls400_gs1024_lsp6_r3.0_typeSC.npy')
 #lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif')
 lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif')
-
 
 # Create 3D vignette mask
 x, y, z = np.meshgrid(np.linspace(-1, 1, lattice.shape[0]),
@@ -61,9 +59,7 @@ lattice = lattice * vignette_mask
 # Project lattice along z-axis and convert to torch tensor
 lattice_2d = torch.tensor(np.sum(lattice, axis=1), dtype=torch.float32, device=device)
 
-lattice_size = lattice_2d.shape[0]
-
-# Resize 2D lattice to target size
+# Resize 2D lattice to target size while maintaining field of view
 lattice_2d = torch.nn.functional.interpolate(lattice_2d.unsqueeze(0).unsqueeze(0), 
                                            size=(target_size, target_size), 
                                            mode='bilinear', align_corners=False)
@@ -100,9 +96,9 @@ while count < num_sims:
     probe_ideal = torch.tensor(probe_ideal, dtype=torch.cfloat, device=device)
 
     # Random rotation angle between 0 and 360 degrees
-    angle = random.uniform(0, 360)
+    #angle = random.uniform(0, 360)
     angle= 0
-    zoom_factor = 1.
+    zoom_factor = 1.5
 
     # Convert to numpy for rotation and zoom
     object_np = object_img.cpu().numpy()
@@ -147,8 +143,8 @@ while count < num_sims:
         # Apply full vignette
         object_img = object_img * full_vignette
 
-    # Define scan parameters - maintain similar density as 1280 case
-    scan_step = probe.shape[0]//random.randint(12, 18)  # Adjusted for 256 size
+    # Define scan parameters - maintain similar density as 256x256 case
+    scan_step = probe.shape[0]//random.randint(12, 15)  # Adjusted for 128 size
     probe_size = probe.shape[0]
 
     # Create a dictionary to store simulation parameters
@@ -215,7 +211,7 @@ while count < num_sims:
         y, x = pos
         
         # Save pattern
-        pattern_filename = f'/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/output_256_conv_{dp_count:05d}.npz'
+        pattern_filename = f'/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/output_128_conv_{dp_count:05d}.npz'
         
         # np.savez(pattern_filename,
         #         pinholeDP=dps_ideal[scan_idx],
@@ -226,18 +222,24 @@ while count < num_sims:
         if dp_count % 100 == 0:  # Print progress every 100 files
             print(f'saved: {pattern_filename} (scan {scan_idx}: {x}, {y})')
 
-# Visualization code for 256x256 case
+# Visualization code for 128x128 case
 # Plot probe and FFT
 fig,ax=plt.subplots(1,3,figsize=(10,5))
 ax[0].imshow(np.abs(probe.cpu().numpy()))
+ax[0].set_title('Original Probe Amplitude')
 ax[1].imshow(np.angle(probe.cpu().numpy()))
+ax[1].set_title('Original Probe Phase')
 ax[2].imshow(np.abs(probe_FFT.cpu().numpy()),norm=colors.LogNorm())
+ax[2].set_title('Original Probe FFT')
 plt.show()
 
 fig,ax=plt.subplots(1,3,figsize=(10,5))
 ax[0].imshow(np.abs(probe_resized.cpu().numpy()))
+ax[0].set_title('Resized Probe Amplitude')
 ax[1].imshow(np.angle(probe_resized.cpu().numpy()))
+ax[1].set_title('Resized Probe Phase')
 ax[2].imshow(np.abs(probe_resized_FFT.cpu().numpy()),norm=colors.LogNorm())
+ax[2].set_title('Resized Probe FFT')
 plt.show()
 
 # Plot results of lattice and diffraction
