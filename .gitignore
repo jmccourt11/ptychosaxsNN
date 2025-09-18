@@ -10,3 +10,4 @@ data/orientation_analysis_22x22x22_cyclic_period_120.html.html
 data/orientation_analysis_25x25x25.html
 diff_sim/lattices/lattice_ls400_gs1024_lsp6_r3.0_typeSC.npy
 diff_sim/lattices/*.npy
+data/*.npz

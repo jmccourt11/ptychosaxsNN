@@ -23,8 +23,8 @@ def load_probe_from_mat(mat_path: str, key: str = 'probe', slice_index: int = 0)
     if probe.ndim == 3:
         probe = probe[:, :, slice_index]
     fig,ax=plt.subplots(1,2,figsize=(10,5))
-    ax[0].set_title('Amplitude')
-    ax[1].set_title('Phase')
+    ax[0].set_title('Original Probe Amplitude')
+    ax[1].set_title('Original Probe Phase')
     ax[0].imshow(np.abs(probe))
     ax[1].imshow(np.angle(probe))
     plt.show()
@@ -45,6 +45,13 @@ def resize_probe_fourier(probe_np: np.ndarray, target_size: int, device: torch.d
     X, Y = torch.meshgrid(x, y, indexing='xy')
     R = torch.sqrt(X ** 2 + Y ** 2)
     probe_resized = probe_resized * (1 - R ** 2).clamp(0, 1)
+    
+    fig,ax=plt.subplots(1,2,figsize=(10,5))
+    ax[0].set_title('Resized Probe Amplitude')
+    ax[1].set_title('Resized Probe Phase')
+    ax[0].imshow(np.abs(probe_resized))
+    ax[1].imshow(np.angle(probe_resized))
+    plt.show()
     return probe_resized
 
 
@@ -530,13 +537,13 @@ result = run_tomo_simulation(
     probe_mat="/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly888/roi0_Ndp512/MLc_L1_p10_gInf_Ndp128_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/Niter1000.mat",
     probe_key="probe",
     probe_slice=0,
-    target_size=256,
+    target_size=1280,
     #lattice_path="/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif",
     lattice_path='/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif',
     phi_axis="y",
     num_phi=3,
-    scan_step_div_min=24,
-    scan_step_div_max=24,
+    scan_step_div_min=18,
+    scan_step_div_max=18,
     phi_start_random=True,
     apply_initial_random_orientation=True,
     batch_size=32,
@@ -572,7 +579,7 @@ import numpy as np
 from matplotlib import colors
 import random
 
-with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi000.h5', 'r') as f:
+with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi001.h5', 'r') as f:
     print(f.keys())
 
     convDPs=f['convDPs'][()]

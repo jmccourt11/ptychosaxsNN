@@ -21,8 +21,8 @@ probe = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC0
 # Resize probe in fourier space
 probe_FFT = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(probe, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
 
-# Create padded array of target size 1280x1280
-target_size = 256
+# Create padded array of target size (e.g. 1280x1280)
+target_size = 1280
 pad_size = (target_size - probe_FFT.shape[0]) // 2
 padded_FFT = torch.zeros((target_size, target_size), dtype=torch.cfloat, device=device)
 padded_FFT[pad_size:pad_size+probe_FFT.shape[0], pad_size:pad_size+probe_FFT.shape[1]] = probe_FFT
@@ -119,7 +119,7 @@ plt.show()
 
 #%%
 lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif')
-lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif')
+#lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif')
 
 
 # Create 3D vignette mask
@@ -132,24 +132,26 @@ vignette_mask = np.clip(1 - distance, 0, 1)
 # Apply vignette to lattice
 lattice = lattice * vignette_mask
 
-# Apply random 3D rotation to the lattice before projection
-# Generate random rotation angles for each axis (in degrees)
-angle_x = random.uniform(0, 360)
-angle_y = random.uniform(0, 360) 
-angle_z = random.uniform(0, 360)
-angle_x=0
-angle_y=0
-angle_z=0
+# # Apply random 3D rotation to the lattice before projection
+# # Generate random rotation angles for each axis (in degrees)
+# angle_x = random.uniform(0, 360)
+# angle_y = random.uniform(0, 360) 
+# angle_z = random.uniform(0, 360)
+# angle_x=0
+# angle_y=0
+# angle_z=0
 
-print(f"3D Rotation angles: X={angle_x:.1f}°, Y={angle_y:.1f}°, Z={angle_z:.1f}°")
+# print(f"3D Rotation angles: X={angle_x:.1f}°, Y={angle_y:.1f}°, Z={angle_z:.1f}°")
 
-# Rotate the 3D lattice around each axis
-print("Rotating lattice around X-axis")
-lattice_rotated = rotate(lattice, angle_x, axes=(1, 2), reshape=False, order=1)  # Rotate around X-axis
-print("Rotating lattice around Y-axis")
-lattice_rotated = rotate(lattice_rotated, angle_y, axes=(0, 2), reshape=False, order=1)  # Rotate around Y-axis
-print("Rotating lattice around Z-axis")
-lattice_rotated = rotate(lattice_rotated, angle_z, axes=(0, 1), reshape=False, order=1)  # Rotate around Z-axis
+# # Rotate the 3D lattice around each axis
+# print("Rotating lattice around X-axis")
+# lattice_rotated = rotate(lattice, angle_x, axes=(1, 2), reshape=False, order=1)  # Rotate around X-axis
+# print("Rotating lattice around Y-axis")
+# lattice_rotated = rotate(lattice_rotated, angle_y, axes=(0, 2), reshape=False, order=1)  # Rotate around Y-axis
+# print("Rotating lattice around Z-axis")
+# lattice_rotated = rotate(lattice_rotated, angle_z, axes=(0, 1), reshape=False, order=1)  # Rotate around Z-axis
+
+lattice_rotated = lattice
 
 # Project lattice along z-axis and convert to torch tensor
 lattice_2d = torch.tensor(np.sum(lattice_rotated, axis=2), dtype=torch.float32, device=device)
