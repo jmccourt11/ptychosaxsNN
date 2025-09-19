@@ -3,13 +3,14 @@ import os
 import argparse
 import random
 from typing import Tuple, List, Optional
-
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm import tqdm
 from scipy.ndimage import rotate, zoom
 import tifffile
 import h5py
+from matplotlib import colors
 
 
 def get_device() -> torch.device:
@@ -22,6 +23,8 @@ def load_probe_from_mat(mat_path: str, key: str = 'probe', slice_index: int = 0)
     probe = data[key]
     if probe.ndim == 3:
         probe = probe[:, :, slice_index]
+    if probe.ndim == 4:
+        probe = probe[:, :, 0,slice_index]   
     fig,ax=plt.subplots(1,2,figsize=(10,5))
     ax[0].set_title('Original Probe Amplitude')
     ax[1].set_title('Original Probe Phase')
@@ -33,9 +36,28 @@ def load_probe_from_mat(mat_path: str, key: str = 'probe', slice_index: int = 0)
 
 def resize_probe_fourier(probe_np: np.ndarray, target_size: int, device: torch.device) -> torch.Tensor:
     probe = torch.tensor(probe_np, dtype=torch.cfloat, device=device)
+    
+    
+    # # Vignette the resized probe to taper edges
+    # y = torch.linspace(-1, 1, probe.shape[0], device=device)
+    # x = torch.linspace(-1, 1, probe.shape[1], device=device)
+    # X, Y = torch.meshgrid(x, y, indexing='xy')
+    # R = torch.sqrt(X ** 2 + Y ** 2)
+    # probe = probe * (1 - R ** 2).clamp(0, 1)
+    # fig,ax=plt.subplots(1,2,figsize=(10,5))
+    # ax[0].set_title('Vignetted Original Probe Amplitude')
+    # ax[1].set_title('Vignetted Original Probe Phase')
+    # ax[0].imshow(np.abs(probe.cpu().numpy()))
+    # ax[1].imshow(np.angle(probe.cpu().numpy()))
+    # plt.show()
+    
+    # Transform to Fourier space and resize to target size
     probe_fft = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(probe, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
     pad_size = (target_size - probe_fft.shape[0]) // 2
-    padded_fft = torch.zeros((target_size, target_size), dtype=torch.cfloat, device=device)
+    # Pad with zeros
+    # padded_fft = torch.zeros((target_size, target_size), dtype=torch.cfloat, device=device)
+    # Pad with the minimum absolute value of the probe, avoids upsampled probe edge artifacts
+    padded_fft = torch.ones((target_size, target_size), dtype=torch.cfloat, device=device)*torch.min(torch.abs(probe_fft))
     padded_fft[pad_size:pad_size + probe_fft.shape[0], pad_size:pad_size + probe_fft.shape[1]] = probe_fft
     probe_resized = torch.fft.ifftshift(torch.fft.ifft2(torch.fft.ifftshift(padded_fft, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
 
@@ -49,8 +71,8 @@ def resize_probe_fourier(probe_np: np.ndarray, target_size: int, device: torch.d
     fig,ax=plt.subplots(1,2,figsize=(10,5))
     ax[0].set_title('Resized Probe Amplitude')
     ax[1].set_title('Resized Probe Phase')
-    ax[0].imshow(np.abs(probe_resized))
-    ax[1].imshow(np.angle(probe_resized))
+    ax[0].imshow(np.abs(probe_resized.cpu().numpy()))
+    ax[1].imshow(np.angle(probe_resized.cpu().numpy()))
     plt.show()
     return probe_resized
 
@@ -338,7 +360,7 @@ def simulate_projection_scans_to_h5(object_img_c: torch.Tensor,
         for j, pos in enumerate(batch):
             yy, xx = int(pos[0].item()), int(pos[1].item())
             object_patches[j] = object_img_c[yy:yy + probe_size, xx:xx + probe_size]
-
+            object_patches[j] = apply_2d_vignette(object_patches[j], device=device) # Vignette patch
         exit_waves = object_patches * probe_c * probe_vignette
         exit_waves_ideal = object_patches * probe_vignette
 
@@ -395,14 +417,28 @@ def run_tomo_simulation(
 
     # Load and resize probe
     probe_np = load_probe_from_mat(probe_mat, key=probe_key, slice_index=probe_slice)
-    probe_c = resize_probe_fourier(probe_np, target_size, device=device)
+    if probe_np.shape[0] != target_size:
+        print(f"Resizing probe from {probe_np.shape[0]} to {target_size}")
+        probe_c = resize_probe_fourier(probe_np, target_size, device=device)
+    else:
+        print(f"Probe already resized to {target_size}")
+        probe_c = torch.tensor(probe_np, dtype=torch.cfloat, device=device)
     probe_vignette = build_probe_vignette(target_size, device=device)
 
     # Load lattice and prepare initial orientation
     lattice = load_lattice(lattice_path).astype(np.float32)
     lattice = apply_3d_vignette(lattice)
+    
+    # # Plot lattice
+    # plt.figure()
+    # plt.imshow(np.sum(lattice,axis=2))
+    # plt.show()
+    # plt.figure()
+    # plt.imshow(np.abs(np.fft.fftshift(np.fft.fft2(np.sum(lattice,axis=2))))**2,norm=colors.LogNorm())
+    # plt.show()
 
     if apply_initial_random_orientation:
+        print("Applying initial 3D random orientation...")
         angle_x0 = random.uniform(0, 360)
         angle_y0 = random.uniform(0, 360)
         angle_z0 = random.uniform(0, 360)
@@ -411,7 +447,7 @@ def run_tomo_simulation(
         lattice = rotate(lattice, angle_z0, axes=(0, 1), reshape=False, order=1)
 
     phi_start = random.uniform(0, 360) if phi_start_random else float(phi_start_deg)
-    phi_step = 180.0 / float(num_phi)
+    phi_step = 360.0 / float(num_phi)
 
     # Optional mask
     mask_np: Optional[np.ndarray] = None
@@ -423,11 +459,41 @@ def run_tomo_simulation(
     scan_step_div = random.randint(scan_step_div_min, scan_step_div_max)
     scan_step = probe_size // scan_step_div
 
+
+    # Toggle to plot projections
+    plot_projections=False
+    
     dp_counter = 0
-    for phi_idx in range(num_phi):
+    for phi_idx in tqdm(range(num_phi),desc="Phi projections"):
         phi_deg = phi_start + phi_step * phi_idx
+        print(f"Phi {phi_idx:03d} angle: {phi_deg:.1f}°")
         vol_rot = rotate_volume(lattice, angle_deg=phi_deg, axis=phi_axis)
         proj2d = project_to_2d(vol_rot, projection_axis=2)
+
+        if plot_projections:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            fig.suptitle('Projected Lattice')
+            ax1.imshow(proj2d)
+            ax1.set_title('Real Space')
+            ax2.imshow(np.abs(np.fft.fftshift(np.fft.fft2(proj2d)))**2, norm=colors.LogNorm())
+            ax2.set_title('Fourier Space')
+            plt.tight_layout()
+            plt.show()
+        else:
+            print('Not plotting projections')
+
+        proj2d = proj2d/np.max(proj2d)
+        proj2d = np.exp(1j * proj2d)
+        
+        if plot_projections:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            fig.suptitle('Projected Lattice (phase object)')
+            ax1.imshow(np.abs(proj2d))
+            ax1.set_title('Amplitude')
+            ax2.imshow(np.angle(proj2d))
+            ax2.set_title('Phase')
+            plt.tight_layout()
+            plt.show()
 
         lattice_2d = torch.tensor(proj2d, dtype=torch.float32, device=device)
         lattice_2d = apply_2d_vignette(lattice_2d, device=device)
@@ -438,10 +504,23 @@ def run_tomo_simulation(
             lattice_2d = apply_2d_vignette(lattice_2d, device=device)
             pad_h = max(0, (pad_target - lattice_2d.shape[0]) // 2)
             pad_w = max(0, (pad_target - lattice_2d.shape[1]) // 2)
-            lattice_2d = torch.nn.functional.pad(lattice_2d, (pad_w, pad_w, pad_h, pad_h), mode='constant', value=0)
-            lattice_2d = apply_2d_vignette(lattice_2d, device=device)
+            # Background handling
+            pad_value = 1
+            bkg = pad_value
+            lattice_2d = torch.nn.functional.pad(lattice_2d+bkg, (pad_w, pad_w, pad_h, pad_h), mode='constant', value=pad_value)
+            #lattice_2d = apply_2d_vignette(lattice_2d, device=device)
 
-        object_img_c = lattice_2d.to(torch.cfloat)
+        if plot_projections:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            fig.suptitle('Projected Lattice (Padded and Vignetted)')
+            ax1.imshow(lattice_2d.cpu().numpy())
+            ax1.set_title('Real Space')
+            ax2.imshow(np.abs(np.fft.fftshift(np.fft.fft2(lattice_2d.cpu().numpy())))**2, norm=colors.LogNorm())
+            ax2.set_title('Fourier Space')
+            plt.tight_layout()
+            plt.show()
+
+        object_img_c = lattice_2d 
 
         # Create H5 writer for this projection
         h5_name = f"tomo_phi{phi_idx:03d}.h5"
@@ -485,72 +564,115 @@ def run_tomo_simulation(
         'scan_step': int(scan_step),
     }
 
+# #%%
+
+# def main():
+#     parser = argparse.ArgumentParser(description="Ptycho-tomography simulation with 180 phi projections.")
+#     parser.add_argument('--probe_mat', type=str, required=True, help="Path to .mat probe file (contains 'probe').")
+#     parser.add_argument('--probe_key', type=str, default='probe', help="MAT key for probe.")
+#     parser.add_argument('--probe_slice', type=int, default=0, help="Slice index for 3D probe in MAT file.")
+#     parser.add_argument('--target_size', type=int, default=1280, help="Target size for probe/object grid.")
+#     parser.add_argument('--lattice_path', type=str, required=True, help="Path to 3D lattice (.npy or .tif).")
+#     parser.add_argument('--phi_axis', type=str, choices=['x', 'y', 'z'], default='y', help="Rotation axis for phi scan.")
+#     parser.add_argument('--num_phi', type=int, default=180, help="Number of phi projections.")
+#     parser.add_argument('--phi_start_random', action='store_true', help="Use random starting phi angle [0, 360).")
+#     parser.add_argument('--phi_start_deg', type=float, default=0.0, help="Starting phi angle (ignored if --phi_start_random).")
+#     parser.add_argument('--apply_initial_random_orientation', action='store_true', help="Apply random X/Y/Z rotation before phi scan.")
+#     parser.add_argument('--scan_step_div_min', type=int, default=18, help="Min divisor for scan step (probe_size // div).")
+#     parser.add_argument('--scan_step_div_max', type=int, default=36, help="Max divisor for scan step (probe_size // div).")
+#     parser.add_argument('--batch_size', type=int, default=32, help="Batch size for FFTs.")
+#     parser.add_argument('--segment_size', type=int, default=256, help="Segment size for saving DPs.")
+#     parser.add_argument('--output_dir', type=str, default='/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output', help="Output directory for NPZ files.")
+#     parser.add_argument('--mask_path', type=str, default=None, help="Optional .npy mask to apply to conv DPs.")
+#     args = parser.parse_args()
+
+#     _ = run_tomo_simulation(
+#         probe_mat=args.probe_mat,
+#         lattice_path=args.lattice_path,
+#         probe_key=args.probe_key,
+#         probe_slice=args.probe_slice,
+#         target_size=args.target_size,
+#         phi_axis=args.phi_axis,
+#         num_phi=args.num_phi,
+#         phi_start_random=args.phi_start_random,
+#         phi_start_deg=args.phi_start_deg,
+#         apply_initial_random_orientation=args.apply_initial_random_orientation,
+#         scan_step_div_min=args.scan_step_div_min,
+#         scan_step_div_max=args.scan_step_div_max,
+#         batch_size=args.batch_size,
+#         segment_size=args.segment_size,
+#         output_dir=args.output_dir,
+#         mask_path=args.mask_path,
+#     )
+
+
+# # if __name__ == '__main__':
+# #     main()
+
+
+
 #%%
 
-def main():
-    parser = argparse.ArgumentParser(description="Ptycho-tomography simulation with 180 phi projections.")
-    parser.add_argument('--probe_mat', type=str, required=True, help="Path to .mat probe file (contains 'probe').")
-    parser.add_argument('--probe_key', type=str, default='probe', help="MAT key for probe.")
-    parser.add_argument('--probe_slice', type=int, default=0, help="Slice index for 3D probe in MAT file.")
-    parser.add_argument('--target_size', type=int, default=1280, help="Target size for probe/object grid.")
-    parser.add_argument('--lattice_path', type=str, required=True, help="Path to 3D lattice (.npy or .tif).")
-    parser.add_argument('--phi_axis', type=str, choices=['x', 'y', 'z'], default='y', help="Rotation axis for phi scan.")
-    parser.add_argument('--num_phi', type=int, default=180, help="Number of phi projections.")
-    parser.add_argument('--phi_start_random', action='store_true', help="Use random starting phi angle [0, 360).")
-    parser.add_argument('--phi_start_deg', type=float, default=0.0, help="Starting phi angle (ignored if --phi_start_random).")
-    parser.add_argument('--apply_initial_random_orientation', action='store_true', help="Apply random X/Y/Z rotation before phi scan.")
-    parser.add_argument('--scan_step_div_min', type=int, default=18, help="Min divisor for scan step (probe_size // div).")
-    parser.add_argument('--scan_step_div_max', type=int, default=36, help="Max divisor for scan step (probe_size // div).")
-    parser.add_argument('--batch_size', type=int, default=32, help="Batch size for FFTs.")
-    parser.add_argument('--segment_size', type=int, default=256, help="Segment size for saving DPs.")
-    parser.add_argument('--output_dir', type=str, default='/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output', help="Output directory for NPZ files.")
-    parser.add_argument('--mask_path', type=str, default=None, help="Optional .npy mask to apply to conv DPs.")
-    args = parser.parse_args()
-
-    _ = run_tomo_simulation(
-        probe_mat=args.probe_mat,
-        lattice_path=args.lattice_path,
-        probe_key=args.probe_key,
-        probe_slice=args.probe_slice,
-        target_size=args.target_size,
-        phi_axis=args.phi_axis,
-        num_phi=args.num_phi,
-        phi_start_random=args.phi_start_random,
-        phi_start_deg=args.phi_start_deg,
-        apply_initial_random_orientation=args.apply_initial_random_orientation,
-        scan_step_div_min=args.scan_step_div_min,
-        scan_step_div_max=args.scan_step_div_max,
-        batch_size=args.batch_size,
-        segment_size=args.segment_size,
-        output_dir=args.output_dir,
-        mask_path=args.mask_path,
-    )
+sample_dir = 'ZCB_9_3D_'
+base_directory = '/net/micdata/data2/12IDC/2025_Feb/results/'
+recon_path = 'roi0_Ndp256/MLc_L1_p10_gInf_Ndp128_mom0.5_pc0_maxPosError500nm_bg0.1_vi_mm/'#MLc_L1_p10_g100_Ndp256_mom0.5_pc800_maxPosError500nm_bg0.1_vp4_vi_mm/'
+Niter = 1000
+scan_number = 5065
+mask_path = '/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_ZCB_9_3D.npy'
+mask_np = np.load(mask_path)
 
 
-if __name__ == '__main__':
-    main()
+#%%
+#1280x1280
+sample_dir = 'RC02_R3D_'
+base_directory = '/net/micdata/data2/12IDC/2024_Dec/results/'
+recon_path = 'roi0_Ndp1280/MLc_L1_p10_g50_Ndp1280_mom0.5_pc0_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g50_Ndp1280_mom0.5_bg0.1_vp4_vi_mm/'
+Niter = 200
+scan_number = 888
+mask_path = '/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_RC02_R3D_1280.npy'
+mask_np = np.load(mask_path)
+
+
+#128x128
+sample_dir = 'RC02_R3D_'
+base_directory = '/net/micdata/data2/12IDC/2024_Dec/results/'
+recon_path = 'roi0_Ndp512/MLc_L1_p10_gInf_Ndp128_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/'
+Niter = 1000
+scan_number = 888
+mask_path = '/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_RC02_R3D_1280.npy'
+mask_np = np.load(mask_path)
+# #256x256
+# sample_dir = 'RC02_R3D_'
+# base_directory = '/net/micdata/data2/12IDC/2024_Dec/results/'
+# recon_path = 'roi0_Ndp512/MLc_L1_p10_gInf_Ndp128_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/MLc_L1_p10_g1000_Ndp256_mom0.5_pc200_model_scale_asymmetry_rotation_shear_maxPosError200nm_noModelCon_bg0.1_vi_mm/'
+# Niter = 1000
+# scan_number = 888
+# mask_path = '/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_RC02_R3D_1280.npy'
+# mask_np = np.load(mask_path)
 
 
 #%%
 
 result = run_tomo_simulation(
-    probe_mat="/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly888/roi0_Ndp512/MLc_L1_p10_gInf_Ndp128_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/Niter1000.mat",
+    #probe_mat="/net/micdata/data2/12IDC/2024_Dec/results/RC02_R3D_/fly888/roi0_Ndp512/MLc_L1_p10_gInf_Ndp128_mom0.5_pc200_model_scale_rotation_shear_asymmetry_noModelCon_bg0.1_vi_mm/Niter1000.mat",
+    probe_mat=f"{base_directory}/{sample_dir}/fly{scan_number}/{recon_path}/Niter{Niter}.mat",
     probe_key="probe",
     probe_slice=0,
     target_size=1280,
     #lattice_path="/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif",
     lattice_path='/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif',
     phi_axis="y",
-    num_phi=3,
-    scan_step_div_min=18,
-    scan_step_div_max=18,
-    phi_start_random=True,
-    apply_initial_random_orientation=True,
+    num_phi=90,
+    scan_step_div_min=8,
+    scan_step_div_max=8,
+    phi_start_random=False,
+    apply_initial_random_orientation=False,
     batch_size=32,
     segment_size=256,
-    mask_path="/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_sum_RC02_R3D_1280.npy",
+    #mask_path="/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_sum_RC02_R3D_1280.npy",
+    mask_path=mask_path, #THIS DOES NOT MATTER FOR THE SIMULATION
     output_dir="/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output",
-    seed=1234,  # optional for reproducibility
+    #seed=1234,  # optional for reproducibility
 )
 
 # probe_mat: str,
@@ -572,29 +694,57 @@ result = run_tomo_simulation(
 #     seed: Optional[int] = None,
 
 print(result)  # {'dp_count': ..., 'phi_start': ..., 'scan_step': ...}
+
+
+
+
+
+
+
+
+
+
 # %%
-import matplotlib.pyplot as plt
-import h5py
-import numpy as np
-from matplotlib import colors
-import random
+plot_example=False
+if plot_example:
+    import matplotlib.pyplot as plt
+    import h5py
+    import numpy as np
+    from matplotlib import colors
+    import random
 
-with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi001.h5', 'r') as f:
-    print(f.keys())
+    with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi000.h5', 'r') as f:
+        print(f.keys())
 
-    convDPs=f['convDPs'][()]
-    idealDPs=f['idealDPs'][()]
-    num_patterns=f['convDPs'][()].shape[0]
-    print(f'{convDPs.shape=}')
-    overlay_rgb=f['overlay_rgb'][()]
-    
+        convDPs=f['convDPs'][()]
+        idealDPs=f['idealDPs'][()]
+        num_patterns=f['convDPs'][()].shape[0]
+        print(f'{convDPs.shape=}')
+        overlay_rgb=f['overlay_rgb'][()]
+    #%%
     ri=random.randint(0, num_patterns-1)
+    #ri=10
     plt.imshow(convDPs[ri], norm=colors.LogNorm())
     plt.show()
     plt.imshow(idealDPs[ri], norm=colors.LogNorm())
     plt.show()
-    
-    
+
+
+    # Reload mask for 256x256 patterns
+    mask_path = '/home/beams/PTYCHOSAXS/deconvolutionNN/data/mask/mask_ZCB_9_3D.npy'
+    mask_np = np.load(mask_path)
+
+    plt.figure(figsize=(20,15))
+    plt.subplot(1, 2, 1)
+    plt.imshow(idealDPs[ri][1280//2-128:1280//2+128,1280//2-128:1280//2+128]*mask_np, norm=colors.LogNorm())
+    plt.title('Sum of Ideal DPs')
+    plt.subplot(1, 2, 2)
+    plt.imshow(convDPs[ri][1280//2-128:1280//2+128,1280//2-128:1280//2+128]*mask_np, norm=colors.LogNorm())
+    plt.title('Sum of Convoluted DPs')
+    plt.show()
+
+
+
     plt.figure(figsize=(20,15))
     plt.subplot(1, 2, 1)
     plt.imshow(np.sum(idealDPs, axis=0), norm=colors.LogNorm())
@@ -603,7 +753,18 @@ with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi
     plt.imshow(np.sum(convDPs, axis=0), norm=colors.LogNorm())
     plt.title('Sum of Convoluted DPs')
     plt.show()
-    
+
+    plt.figure(figsize=(20,15))
+    plt.subplot(1, 2, 1)
+    plt.imshow(np.sum(idealDPs, axis=0)[1280//2-128:1280//2+128,1280//2-128:1280//2+128]*mask_np, norm=colors.LogNorm())
+    plt.title('Sum of Ideal DPs')
+    plt.subplot(1, 2, 2)
+    plt.imshow(np.sum(convDPs, axis=0)[1280//2-128:1280//2+128,1280//2-128:1280//2+128]*mask_np, norm=colors.LogNorm())
+    plt.title('Sum of Convoluted DPs')
+    plt.show()
+
+
+
     plt.figure()
     plt.imshow(overlay_rgb[:,:,0])
     plt.show()
@@ -612,4 +773,4 @@ with h5py.File('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/data/tomo_output/tomo_phi
     # print(f['probe_amplitude'][()].shape)
     # print(f['probe_phase'][()].shape)
     # print(f['overlay_rgb'][()].shape)
-# %%
+    # %%

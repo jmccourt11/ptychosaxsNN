@@ -47,9 +47,15 @@ def scale_lattice(lattice_3d, target_size, base_size=128):
     """
     # Project 3D lattice to 2D
     lattice_2d = np.sum(lattice_3d, axis=2)
-    
+
     # Convert to tensor
     lattice_tensor = torch.tensor(lattice_2d, device=device, dtype=torch.float32)
+    
+    # # Pad lattice to target size
+    # lattice_padded = torch.zeros((1920, 1920), device=device)
+    # lattice_padded[1920//2-lattice_tensor.shape[0]//2:1920//2+lattice_tensor.shape[0]//2,1920//2-lattice_tensor.shape[1]//2:1920//2+lattice_tensor.shape[1]//2] = lattice_tensor
+
+    # lattice_tensor = lattice_padded
     
     # Scale the lattice
     lattice_scaled = torch.nn.functional.interpolate(lattice_tensor.unsqueeze(0).unsqueeze(0),
@@ -59,13 +65,17 @@ def scale_lattice(lattice_3d, target_size, base_size=128):
     
     return lattice_scaled
 
-def get_scan_step(target_size, base_size=128):
+def get_scan_step(target_size, base_size=128, n_steps=8):
     """
-    Calculate scan step to maintain consistent sampling density
+    Calculate scan step to maintain consistent number of steps across sizes
+    
+    Args:
+        target_size: Size of the target image
+        base_size: Reference size (128 by default)
+        n_steps: Number of steps in each dimension (8 for 8x8 grid)
     """
-    scale_factor = target_size / base_size
-    base_steps = random.randint(12, 15)  # Base number of steps for 128x128
-    return max(1, int(target_size // (base_steps * scale_factor)))
+    # For consistent number of steps, step size should scale with target size
+    return target_size // n_steps
 
 def plot_feature_comparison(lattices, probes, sizes):
     """
@@ -103,8 +113,8 @@ def simulate_pattern(target_size, base_size=128):
                             dtype=torch.cfloat, device=device)
     
     # Load lattice
-    #lattice = tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif')
-    lattice = tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_400x400x400_24x24x24unitcells.tif')
+    lattice = tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif')
+    #lattice = tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_400x400x400_24x24x24unitcells.tif')
     
     
     # Create 3D vignette mask for lattice
@@ -137,22 +147,42 @@ def simulate_pattern(target_size, base_size=128):
     
     # Prepare object (rotated and zoomed lattice)
     angle = 0  # Fixed angle for now
-    zoom_factor = 1.5
     
-    # Convert to numpy for rotation and zoom
+    # First determine scan parameters
+    n_steps = 8  # 8x8 grid of scan positions
+    step_overlap = 0.5  # 50% overlap between scan positions
+    scan_step = int(probe_size * (1 - step_overlap))  # Step size with overlap
+    
+    # Keep lattice at its natural size relative to probe
+    # Scale lattice to be about 20% of probe size
+    desired_feature_size = probe_size * 0.2
+    scaling_factor = desired_feature_size / lattice_2d.shape[0]
+    scaling_factor=2.5
+    print(f'scaling_factor: {scaling_factor}')
+    
+    # Scale lattice to maintain feature size relative to probe
     object_np = lattice_2d.cpu().numpy()
-    zoomed = zoom(object_np, (zoom_factor, zoom_factor), order=1)
-    rotated = rotate(zoomed, angle, reshape=False, order=1)
-    object_img = torch.tensor(rotated, dtype=torch.cfloat, device=device)
+    scaled = zoom(object_np, (scaling_factor, scaling_factor), order=1)
+    rotated = rotate(scaled, angle, reshape=False, order=1)
+    object_base = torch.tensor(rotated, dtype=torch.cfloat, device=device)
     
-    # Pad object if needed
-    if object_img.shape[0] < probe_size:
-        pad_height = int((1.5*probe_size - object_img.shape[0]) // 2)
-        pad_width = int((1.5*probe_size - object_img.shape[1]) // 2)
-        object_img = torch.nn.functional.pad(object_img, 
-                                           (pad_width, pad_width, pad_height, pad_height),
-                                           mode='constant', value=0)
-        object_img = object_img * vignette
+    # Calculate required padding for scan grid
+    scan_area_size = scan_step * (n_steps - 1) + probe_size  # Size needed for n_steps
+    current_size = object_base.shape[0]
+    total_pad = max(0, scan_area_size - current_size)
+    pad_each = total_pad // 2
+    
+    # Pad the object to accommodate scan positions
+    object_img = torch.nn.functional.pad(object_base,
+                                       (pad_each, pad_each, pad_each, pad_each),
+                                       mode='constant', value=0)
+    
+    # Apply vignette
+    y = torch.linspace(-1, 1, object_img.shape[0])
+    x = torch.linspace(-1, 1, object_img.shape[1])
+    X, Y = torch.meshgrid(x, y, indexing='xy')
+    R = torch.sqrt(X**2 + Y**2).to(device)
+    object_img = object_img * (1 - R**2).clamp(0, 1)
     
     # Calculate scan positions
     scan_positions = []
@@ -210,7 +240,7 @@ def simulate_pattern(target_size, base_size=128):
 
 #%%
 # Test the simulation at different scales
-target_sizes = [128, 256,512,1280]  # Can extend to [128, 256, 512, 1280]
+target_sizes = [256]#[128, 256,512,1280]  # Can extend to [128, 256, 512, 1280]
 results = {}
 
 for size in target_sizes:
@@ -227,13 +257,36 @@ for size in target_sizes:
     result = results[size]
     
     fig, ax = plt.subplots(2, 2, figsize=(10, 10))
-    im1 = ax[0,0].imshow(np.sum(result['dps'], axis=0), norm=colors.LogNorm(), cmap='jet')
-    im2 = ax[0,1].imshow(np.sum(result['dps_ideal'], axis=0), norm=colors.LogNorm(), cmap='jet')
     
+    # Add small epsilon to avoid log(0)
+    eps = 1e-10
+    
+    def safe_log_norm(data):
+        """Create a safe LogNorm that handles zero or all-zero arrays"""
+        if data.size == 0 or np.all(data == 0):
+            return colors.LogNorm(vmin=eps, vmax=1.0)
+        non_zero = data[data > 0]
+        if len(non_zero) == 0:
+            return colors.LogNorm(vmin=eps, vmax=1.0)
+        return colors.LogNorm(vmin=max(non_zero.min(), eps), 
+                            vmax=max(data.max(), eps*10))
+    
+    # Sum patterns
+    sum_dp = np.sum(result['dps'], axis=0)
+    sum_dp_ideal = np.sum(result['dps_ideal'], axis=0)
+    
+    # Get random pattern
     ri = random.randint(0, len(result['dps'])-1)
-    im3 = ax[1,0].imshow(result['dps'][ri], norm=colors.LogNorm(), cmap='jet')
-    im4 = ax[1,1].imshow(result['dps_ideal'][ri], norm=colors.LogNorm(), cmap='jet')
+    single_dp = result['dps'][ri]
+    single_dp_ideal = result['dps_ideal'][ri]
     
+    # Plot with proper normalization
+    im1 = ax[0,0].imshow(sum_dp + eps, norm=safe_log_norm(sum_dp), cmap='jet')
+    im2 = ax[0,1].imshow(sum_dp_ideal + eps, norm=safe_log_norm(sum_dp_ideal), cmap='jet')
+    im3 = ax[1,0].imshow(single_dp + eps, norm=safe_log_norm(single_dp), cmap='jet')
+    im4 = ax[1,1].imshow(single_dp_ideal + eps, norm=safe_log_norm(single_dp_ideal), cmap='jet')
+    
+    # Add colorbars
     plt.colorbar(im1, ax=ax[0,0])
     plt.colorbar(im2, ax=ax[0,1])
     plt.colorbar(im3, ax=ax[1,0])
@@ -248,25 +301,106 @@ for size in target_sizes:
     plt.tight_layout()
     plt.show()
 
-    # Plot scan positions
-    fig, ax = plt.subplots(1, 2, figsize=(15, 7))
-    
-    ax[0].imshow(np.abs(result['object'].cpu().numpy()), cmap='gray')
-    ax[0].set_title(f'{size}x{size} Object with Scan Positions')
-    
+    # Plot scan positions and corresponding diffraction patterns
+    # First figure: Scan positions
+    fig1 = plt.figure(figsize=(20, 10))
+    gs1 = plt.GridSpec(2, 4, width_ratios=[2, 1, 1, 1])
+
+    # Full object with all scan positions
+    ax_full = fig1.add_subplot(gs1[0, :2])
+    ax_full.imshow(np.abs(result['object'].cpu().numpy()), cmap='gray')
+    ax_full.set_title(f'{size}x{size} Object with All Scan Positions')
+
+    # Draw rectangles for each scan position
     for i, pos in enumerate(result['scan_positions'].cpu().numpy()):
         y, x = pos
         rect = patches.Rectangle((x, y), size, size, 
                                linewidth=1, edgecolor='red', facecolor='none', alpha=0.3)
-        ax[0].add_patch(rect)
+        ax_full.add_patch(rect)
         
         if i < 10:
-            ax[0].text(x + size/2, y + size/2, str(i), 
+            ax_full.text(x + size/2, y + size/2, str(i), 
                       color='yellow', fontsize=8, ha='center', va='center')
+
+    # Probe shape
+    ax_probe = fig1.add_subplot(gs1[0, 2:])
+    ax_probe.imshow(np.abs(result['probe'].cpu().numpy()), cmap='viridis')
+    ax_probe.set_title(f'{size}x{size} Probe')
+
+    # Select random positions
+    n_positions = 3
+    random_indices = random.sample(range(len(result['scan_positions'])), n_positions)
+
+    # Show random positions
+    for idx, pos_idx in enumerate(random_indices):
+        ax_pos = fig1.add_subplot(gs1[1, idx+1])
+        pos = result['scan_positions'][pos_idx].cpu().numpy()
+        y, x = pos
+        
+        # Extract the object patch
+        object_patch = result['object'][y:y+size, x:x+size].cpu().numpy()
+        
+        # Show object and probe overlay
+        ax_pos.imshow(np.abs(object_patch), cmap='gray')
+        probe_abs = np.abs(result['probe'].cpu().numpy())
+        probe_normalized = probe_abs / np.max(probe_abs)
+        ax_pos.imshow(probe_normalized, cmap='Reds', alpha=0.4)
+        
+        # Add position indicator
+        ax_pos.set_title(f'Random Position {pos_idx}')
+        
+        # Add crosshairs
+        center_x, center_y = size//2, size//2
+        ax_pos.axhline(y=center_y, color='cyan', linestyle='--', alpha=0.7)
+        ax_pos.axvline(x=center_x, color='cyan', linestyle='--', alpha=0.7)
+
+    # Show full object with highlighted random positions
+    ax_highlight = fig1.add_subplot(gs1[1, 0])
+    ax_highlight.imshow(np.abs(result['object'].cpu().numpy()), cmap='gray')
+    ax_highlight.set_title('Selected Random Positions')
     
-    ax[1].imshow(np.abs(result['probe'].cpu().numpy()), cmap='viridis')
-    ax[1].set_title(f'{size}x{size} Probe')
+    # Highlight random positions
+    for pos_idx in random_indices:
+        pos = result['scan_positions'][pos_idx].cpu().numpy()
+        y, x = pos
+        rect = patches.Rectangle((x, y), size, size,
+                               linewidth=2, edgecolor='yellow', facecolor='none', alpha=0.8)
+        ax_highlight.add_patch(rect)
+        ax_highlight.text(x + size/2, y + size/2, str(pos_idx),
+                        color='red', fontsize=10, ha='center', va='center')
+
+    plt.suptitle(f'Scan Position Visualization for {size}x{size}\nShowing Random Scan Positions', fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+    # Second figure: Corresponding diffraction patterns
+    fig2, axes = plt.subplots(2, n_positions, figsize=(15, 10))
     
+    def safe_log_norm(data):
+        """Create a safe LogNorm that handles zero or all-zero arrays"""
+        if data.size == 0 or np.all(data == 0):
+            return colors.LogNorm(vmin=1e-10, vmax=1.0)
+        non_zero = data[data > 0]
+        if len(non_zero) == 0:
+            return colors.LogNorm(vmin=1e-10, vmax=1.0)
+        return colors.LogNorm(vmin=max(non_zero.min(), 1e-10), 
+                            vmax=max(data.max(), 1e-9))
+
+    # Plot diffraction patterns for each random position
+    for idx, pos_idx in enumerate(random_indices):
+        # Convolved pattern
+        dp = result['dps'][pos_idx]
+        im1 = axes[0, idx].imshow(dp, norm=safe_log_norm(dp), cmap='jet')
+        plt.colorbar(im1, ax=axes[0, idx])
+        axes[0, idx].set_title(f'Convolved DP\nPosition {pos_idx}')
+        
+        # Ideal pattern
+        dp_ideal = result['dps_ideal'][pos_idx]
+        im2 = axes[1, idx].imshow(dp_ideal, norm=safe_log_norm(dp_ideal), cmap='jet')
+        plt.colorbar(im2, ax=axes[1, idx])
+        axes[1, idx].set_title(f'Ideal DP\nPosition {pos_idx}')
+
+    plt.suptitle(f'Diffraction Patterns for Random Positions\n{size}x{size}', fontsize=14)
     plt.tight_layout()
     plt.show()
 

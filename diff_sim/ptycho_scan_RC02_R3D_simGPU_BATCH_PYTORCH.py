@@ -22,7 +22,7 @@ probe = torch.tensor(sio.loadmat(f"/net/micdata/data2/12IDC/2024_Dec/results/RC0
 probe_FFT = torch.fft.fftshift(torch.fft.fft2(torch.fft.fftshift(probe, dim=(-2, -1)), norm='ortho'), dim=(-2, -1))
 
 # Create padded array of target size 1280x1280
-target_size = 256
+target_size = 1280
 pad_size = (target_size - probe_FFT.shape[0]) // 2
 padded_FFT = torch.zeros((target_size, target_size), dtype=torch.cfloat, device=device)
 padded_FFT[pad_size:pad_size+probe_FFT.shape[0], pad_size:pad_size+probe_FFT.shape[1]] = probe_FFT
@@ -119,7 +119,7 @@ plt.show()
 
 #%%
 lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrate_II_simulated_800x800x800_24x24x24unitcells.tif')
-lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif')
+#lattice=tifffile.imread('/home/beams/PTYCHOSAXS/NN/ptychosaxsNN/diff_sim/lattices/clathrateRBP_800x800x800_12x12x12unitcells_RBP.tif')
 
 
 # Create 3D vignette mask

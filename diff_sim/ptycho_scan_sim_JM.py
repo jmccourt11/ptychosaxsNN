@@ -169,6 +169,7 @@ lattice_2d = lattice_2d.squeeze(0).squeeze(0)
 # lattice_2d_rotated = rotate(lattice_2d_np, angle, reshape=False, order=1)
 # # Convert back to torch tensor on GPU
 # lattice_2d = torch.tensor(lattice_2d_rotated, dtype=torch.float32, device=device)
+
 #%%
 fig,ax=plt.subplots(1,2,figsize=(30,15))
 ax[0].imshow(lattice_2d.cpu().numpy())
@@ -543,7 +544,7 @@ while count<num_sims:
 
 
     # Choose what to save: 'summed' for segmented summed patterns, 'individual' for all scan patterns
-    save_mode = 'individual'  # Change this to 'individual' to save all scan patterns
+    save_mode = 'summed'  # Change this to 'individual' to save all scan patterns
     
     if save_mode == 'summed':
         # Segment and plot summed diffraction patterns
